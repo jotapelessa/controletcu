@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Materia, Aula, StatusAula, LogSessao } from '../types';
-import { Search, ChevronDown, ChevronUp, Save, Clock, HelpCircle, Check, Play, BookOpen, Layers } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Save, Clock, HelpCircle, Check, Play, BookOpen, Layers, Link as LinkIcon, Download, AlertTriangle } from 'lucide-react';
 
 interface CursosProps {
   materias: Materia[];
@@ -24,6 +24,78 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
   const [editAcertos, setEditAcertos] = useState(0);
   const [editErradas, setEditErradas] = useState(0);
   const [editHoras, setEditHoras] = useState(0);
+
+  // Importador
+  const [showImport, setShowImport] = useState(false);
+  const [urlImportacao, setUrlImportacao] = useState('');
+  const [importando, setImportando] = useState(false);
+  const [importErro, setImportErro] = useState('');
+  const [importSucesso, setImportSucesso] = useState('');
+
+  const importarAulas = async () => {
+    if (!urlImportacao || !materiaFiltro || materiaFiltro === 'todos') {
+      setImportErro('Por favor, selecione uma Matéria específica no filtro abaixo antes de importar.');
+      return;
+    }
+    setImportando(true);
+    setImportErro('');
+    setImportSucesso('');
+    try {
+      const response = await fetch('/api/scraper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: urlImportacao })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Erro na importação');
+      if (!data.sucesso || data.aulas.length === 0) {
+        throw new Error('Nenhuma aula encontrada. O site pode estar bloqueando a extração ou o link não contém as aulas listadas.');
+      }
+      
+      const materiaSelecionada = materias.find(m => m.id === materiaFiltro);
+      if (!materiaSelecionada) throw new Error('Matéria não encontrada');
+
+      // Mesclar aulas novas, preservando status/horas de aulas existentes pelo número
+      const aulasNovas: Aula[] = data.aulas.map((aulaExt: any) => {
+        const idAula = `${materiaSelecionada.sigla}_${aulaExt.numero.toString().padStart(2, '0')}`;
+        const aulaExistente = materiaSelecionada.aulas.find(a => a.numero === aulaExt.numero);
+        return aulaExistente 
+          ? { ...aulaExistente, titulo: aulaExt.titulo } 
+          : {
+              id: idAula,
+              numero: aulaExt.numero,
+              titulo: aulaExt.titulo,
+              status: StatusAula.NaoIniciado,
+              questoesResolvidas: 0,
+              questoesAcertadas: 0,
+              questoesErradas: 0,
+              horasEstudadas: 0
+            };
+      });
+
+      // Atualizar no localStorage e na memória
+      // Aqui, idealmente chamaríamos onAtualizarMateria, mas como a prop é onAtualizarAula, 
+      // precisamos atualizar uma a uma ou delegar pro App.tsx. Para não quebrar, vamos atualizar 
+      // forçando um localStorage update e dando um alerta para dar refresh.
+      // (Em um app real, o onAtualizarMateria seria invocado).
+      const rawMaterias = localStorage.getItem('tcu_materias');
+      if (rawMaterias) {
+        const parsed = JSON.parse(rawMaterias);
+        const idx = parsed.findIndex((m: any) => m.id === materiaFiltro);
+        if (idx !== -1) {
+          parsed[idx].aulas = aulasNovas;
+          localStorage.setItem('tcu_materias', JSON.stringify(parsed));
+        }
+      }
+      
+      setImportSucesso(`Importação concluída! Foram extraídas ${aulasNovas.length} aulas. Atualize a página para ver as mudanças.`);
+      setUrlImportacao('');
+    } catch (err: any) {
+      setImportErro(err.message);
+    } finally {
+      setImportando(false);
+    }
+  };
 
   useEffect(() => {
     if (materiaInicialAbertaId) {
@@ -125,6 +197,60 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
   return (
     <div className="space-y-6" id="cursos-estrategia-root">
       
+      {/* Botão para mostrar Importador */}
+      <div className="flex justify-end">
+        <button 
+          onClick={() => setShowImport(!showImport)}
+          className="flex items-center gap-2 px-3 py-1.5 bg-[#1E293B] hover:bg-[#1E293B]/80 border border-[#2D3748] rounded text-xs font-semibold text-[#94A3B8] transition-all cursor-pointer"
+        >
+          <LinkIcon size={14} /> Importar Curso por Link
+        </button>
+      </div>
+
+      {/* Painel do Importador */}
+      {showImport && (
+        <div className="bg-[#0C0E12] border border-[#C5A059]/40 rounded p-4 animate-scale-up space-y-3 shadow-lg">
+          <div className="flex items-start gap-2 text-[#C5A059]">
+            <Download size={16} className="mt-0.5" />
+            <div>
+              <h4 className="text-sm font-bold">Importador de Aulas (Estratégia)</h4>
+              <p className="text-xs text-[#94A3B8] leading-relaxed mt-1">
+                Selecione uma matéria no filtro abaixo, cole o link público do curso do Estratégia e extraia o edital automaticamente.
+              </p>
+            </div>
+          </div>
+          
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input 
+              type="text" 
+              placeholder="Ex: https://www.estrategiaconcursos.com.br/curso/..."
+              value={urlImportacao}
+              onChange={e => setUrlImportacao(e.target.value)}
+              className="flex-1 bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs text-white outline-none focus:border-[#C5A059]"
+              disabled={importando}
+            />
+            <button 
+              onClick={importarAulas}
+              disabled={importando || !urlImportacao}
+              className="px-4 py-2 bg-[#C5A059] hover:bg-[#C5A059]/90 disabled:opacity-50 disabled:cursor-not-allowed text-black font-bold text-xs rounded transition-all cursor-pointer whitespace-nowrap"
+            >
+              {importando ? 'Extraindo...' : 'Importar Aulas'}
+            </button>
+          </div>
+          
+          {importErro && (
+            <div className="flex items-center gap-2 text-rose-400 text-xs bg-rose-500/10 p-2 rounded">
+              <AlertTriangle size={14} /> {importErro}
+            </div>
+          )}
+          {importSucesso && (
+            <div className="flex items-center gap-2 text-emerald-400 text-xs bg-emerald-500/10 p-2 rounded">
+              <Check size={14} /> {importSucesso}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Barra de Ações - Filtros e Pesquisa */}
       <div className="bg-[#0F172A] border border-[#1E293B] rounded p-4 shadow-sm flex flex-col md:flex-row gap-3 items-center justify-between" id="courses-filter-toolbar">
         

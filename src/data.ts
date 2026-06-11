@@ -494,13 +494,13 @@ export function carregarDadosIniciais() {
         // Se o usuário tem essa matéria, vamos garantir que ela tenha TODAS as aulas corretas.
         // Preservando o status de progresso das aulas que o usuário já estudou.
         const aulasConcatenadas = defaultMat.aulas.map(defaultAula => {
-          // Busca por id ou por número (com tolerância de migração de 0-based para 1-based)
+          // Busca exata pelo id ou número da aula para preservar o progresso (questoes, status, horas)
           const userAula = userMat.aulas.find(a => 
             a.id === defaultAula.id || 
-            a.numero === defaultAula.numero ||
-            a.numero === defaultAula.numero - 1
+            a.numero === defaultAula.numero
           );
-          return userAula ? { ...defaultAula, ...userAula, id: defaultAula.id, numero: defaultAula.numero } : defaultAula;
+          // O titulo oficial do defaultAula SEMPRE prevalece sobre o do userAula para corrigir bugs antigos
+          return userAula ? { ...defaultAula, ...userAula, id: defaultAula.id, numero: defaultAula.numero, titulo: defaultAula.titulo } : defaultAula;
         });
 
         return {

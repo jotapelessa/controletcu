@@ -40,6 +40,8 @@ interface PlanejamentoConfig {
   distribuicaoDias: { [diaIndex: number]: string[] }; // dia (0-6) -> lista de materiaId
   maxMateriasPorDia?: number;
   tempoPorDia?: { [diaIndex: number]: number };
+  // Override manual por matéria (minutos/semana). Se presente, sobrepõe o cálculo automático.
+  minutosCustomizados?: { [materiaId: string]: number };
 }
 
 const DIAS_NOMES = [
@@ -81,6 +83,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
         if (!parsed.pesoMaterias) parsed.pesoMaterias = pesosIniciais;
         if (!parsed.materiasAtivas) parsed.materiasAtivas = materias.map(m => m.id);
         if (parsed.maxMateriasPorDia === undefined) parsed.maxMateriasPorDia = 17;
+        if (!parsed.minutosCustomizados) parsed.minutosCustomizados = {};
         if (!parsed.tempoPorDia) {
           parsed.tempoPorDia = {};
           const totalAtivos = parsed.diasAtivos ? parsed.diasAtivos.filter(Boolean).length : 6;
@@ -117,7 +120,8 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       materiasAtivas: materias.map(m => m.id),
       distribuicaoDias: distribuicaoInicial,
       maxMateriasPorDia: 17,
-      tempoPorDia: temposIniciais
+      tempoPorDia: temposIniciais,
+      minutosCustomizados: {}
     };
   });
 
@@ -134,6 +138,9 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
   const [tempoMinutosLog, setTempoMinutosLog] = useState(90);
   const [tipoEstudoLog, setTipoEstudoLog] = useState<'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão'>('Teoria (PDF)');
   const [mensagemSucesso, setMensagemSucesso] = useState('');
+  // Estado para edição inline de horas manuais (materiaId -> valor digitado em minutos/sem)
+  const [editandoMinutos, setEditandoMinutos] = useState<{ [materiaId: string]: string }>({});
+  const [flashOK, setFlashOK] = useState<{ [materiaId: string]: boolean }>({});
 
   // 1. CÁLCULO GERAL DO TEMPO DISPONÍVEL
   const totalDiasEstudo = config.diasAtivos.filter(Boolean).length;
@@ -170,14 +177,16 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
     porcentagem: number;
     peso: number;
     sessoesSemanais: number;
+    isCustom: boolean; // override manual ativo?
   }
 
-  let materiasComTempo: MateriaCalculada[] = [];
+  // Calcula os minutos automáticos (sem overrides)
+  let materiasComTempoAuto: Omit<MateriaCalculada, 'isCustom'>[] = [];
 
   if (materiasSelecionadas.length > 0 && minutosSemanaisTotais > 0) {
     if (config.tipoDivisao === 'igual') {
       const minutosPorMateria = minutosSemanaisTotais / materiasSelecionadas.length;
-      materiasComTempo = materiasSelecionadas.map(m => ({
+      materiasComTempoAuto = materiasSelecionadas.map(m => ({
         materia: m,
         minutosSemanais: minutosPorMateria,
         minutosDiarios: minutosPorMateria / (totalDiasEstudo || 1),
@@ -187,7 +196,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       }));
     } else if (config.tipoDivisao === 'peso') {
       const somaPesos = materiasSelecionadas.reduce((acc, m) => acc + (config.pesoMaterias[m.id] || 3), 0);
-      materiasComTempo = materiasSelecionadas.map(m => {
+      materiasComTempoAuto = materiasSelecionadas.map(m => {
         const peso = config.pesoMaterias[m.id] || 3;
         const proporcao = peso / (somaPesos || 1);
         const minutosMateria = minutosSemanaisTotais * proporcao;
@@ -218,12 +227,10 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       const blocosOrdenados = [...blocosBrutos].sort((a, b) => (b.ideal - b.real) - (a.ideal - a.real));
       for (let i = 0; i < blocosRestantes; i++) {
         const item = blocosOrdenados[i % blocosOrdenados.length];
-        if (item) {
-          item.real += 1;
-        }
+        if (item) item.real += 1;
       }
 
-      materiasComTempo = blocosBrutos.map(item => {
+      materiasComTempoAuto = blocosBrutos.map(item => {
         const minsMateria = item.real * config.tamanhoBlocoMinutos;
         return ({
           materia: item.m,
@@ -236,6 +243,44 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       });
     }
   }
+
+  // Aplica overrides manuais por matéria
+  const minutosCustomizados = config.minutosCustomizados || {};
+  const materiasComTempo: MateriaCalculada[] = materiasComTempoAuto.map(mc => {
+    const custom = minutosCustomizados[mc.materia.id];
+    const mins = (custom !== undefined && custom >= 0) ? custom : mc.minutosSemanais;
+    return {
+      ...mc,
+      minutosSemanais: mins,
+      minutosDiarios: mins / (totalDiasEstudo || 1),
+      porcentagem: mins, // Será recalculado abaixo com base no total real
+      isCustom: custom !== undefined
+    };
+  });
+
+  // Recalcular porcentagens com base no total efetivo (com overrides)
+  const totalMinutosEfetivos = materiasComTempo.reduce((s, mc) => s + mc.minutosSemanais, 0);
+  materiasComTempo.forEach(mc => {
+    mc.porcentagem = totalMinutosEfetivos > 0 ? (mc.minutosSemanais / totalMinutosEfetivos) * 100 : 0;
+  });
+
+  // Funções de controle de override manual
+  const setMinutosCustom = (materiaId: string, valor: number) => {
+    setConfig(prev => ({
+      ...prev,
+      minutosCustomizados: { ...(prev.minutosCustomizados || {}), [materiaId]: Math.max(0, Math.min(10080, valor)) }
+    }));
+    setFlashOK(prev => ({ ...prev, [materiaId]: true }));
+    setTimeout(() => setFlashOK(prev => ({ ...prev, [materiaId]: false })), 1200);
+  };
+
+  const resetMinutosCustom = () => {
+    setConfig(prev => ({ ...prev, minutosCustomizados: {} }));
+    setEditandoMinutos({});
+  };
+
+  const temAlgumCustom = Object.keys(minutosCustomizados).length > 0;
+  const diferencaMinutos = totalMinutosEfetivos - minutosSemanaisTotais;
 
   // 3. INTELIGÊNCIA DE AUTO-DISTRIBUIÇÃO DOS DIAS
   const handleAutoDistribuir = () => {
@@ -710,50 +755,160 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
         {/* PARTE DIREITA: DEMONSTRATIVO DE REPARTIÇÃO & CRONOGRAMA SEMANAL */}
         <div className="lg:col-span-7 space-y-6" id="planning-results-column">
           
-          {/* CARD 3: REPARTIÇÃO DOS MINUTOS E HORAS */}
+          {/* CARD 3: REPARTIÇÃO DOS MINUTOS E HORAS — COM EDIÇÃO MANUAL */}
           <div className="bg-[#0F172A] border border-[#1E293B] p-5 rounded-sm shadow-sm space-y-4" id="card-distribuicao-graficos">
             <h3 className="text-sm font-display font-medium text-white flex items-center justify-between pb-3 border-b border-[#1E293B]">
               <span className="flex items-center gap-2"><TrendingUp size={18} className="text-[#C5A059]" /> Repartição Matemática do Tempo</span>
               <span className="text-xs text-[#94A3B8] font-mono">{materiasSelecionadas.length} de {materias.length} Ativas</span>
             </h3>
 
+            {/* BARRA DE STATUS: tempo total personalizado vs disponível */}
+            {materiasComTempo.length > 0 && (
+              <div className={`flex items-center justify-between text-[11px] px-3 py-2 rounded border ${
+                temAlgumCustom
+                  ? diferencaMinutos > 30
+                    ? 'bg-red-950/40 border-red-800/50 text-red-400'
+                    : diferencaMinutos < -30
+                      ? 'bg-blue-950/40 border-blue-800/50 text-blue-400'
+                      : 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400'
+                  : 'bg-[#0C0E12] border-[#1E293B] text-[#64748B]'
+              }`}>
+                <span className="font-mono">
+                  {temAlgumCustom ? '✏️ Ajuste manual ativo —' : '⚙️ Automático —'} Total distribuído:{' '}
+                  <strong className="text-white">{formatarTempo(totalMinutosEfetivos)}</strong>
+                </span>
+                <span className="font-mono">
+                  Disponível: <strong className="text-white">{formatarTempo(minutosSemanaisTotais)}</strong>
+                  {temAlgumCustom && (
+                    <span className={`ml-2 font-bold ${
+                      Math.abs(diferencaMinutos) <= 30 ? 'text-emerald-400' :
+                      diferencaMinutos > 0 ? 'text-red-400' : 'text-blue-400'
+                    }`}>
+                      ({diferencaMinutos > 0 ? '+' : ''}{formatarTempo(Math.abs(diferencaMinutos))}{diferencaMinutos > 0 ? ' excede' : ' sobra'})
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+
             {materiasComTempo.length > 0 ? (
-              <div className="space-y-3" id="visual-repartition-grid">
-                <div className="grid grid-cols-2 gap-4 text-[10px] font-mono border-b border-[#1E293B] pb-2 text-[#64748B] uppercase tracking-wider">
+              <div className="space-y-1" id="visual-repartition-grid">
+                {/* Cabeçalho */}
+                <div className="grid grid-cols-[1fr_auto] gap-2 text-[10px] font-mono border-b border-[#1E293B] pb-2 text-[#64748B] uppercase tracking-wider">
                   <span>Matéria Selecionada</span>
-                  <span className="text-right">Tempo Alocado Semana / Dia</span>
+                  <span className="text-right pr-1">Tempo Semana / Dia</span>
                 </div>
 
-                <div className="space-y-3 max-h-[190px] overflow-y-auto pr-1">
+                <div className="space-y-2.5 max-h-[310px] overflow-y-auto pr-1 pt-1">
                   {materiasComTempo.map(mc => {
+                    const isEdit = editandoMinutos[mc.materia.id] !== undefined;
+                    const isFlash = flashOK[mc.materia.id];
                     return (
-                      <div key={mc.materia.id} className="space-y-1" id={`row-repart-${mc.materia.id}`}>
-                        <div className="flex justify-between items-center text-xs">
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: mc.materia.cor }} />
-                            <span className="font-bold text-white">{mc.materia.sigla}</span>
-                            <span className="text-[#94A3B8] text-[11px] truncate max-w-[160px]">{mc.materia.nome}</span>
+                      <div
+                        key={mc.materia.id}
+                        className={`space-y-1 p-2 rounded border transition-all ${
+                          isFlash
+                            ? 'border-emerald-500/60 bg-emerald-950/20'
+                            : mc.isCustom
+                              ? 'border-[#C5A059]/30 bg-[#C5A059]/5'
+                              : 'border-transparent'
+                        }`}
+                        id={`row-repart-${mc.materia.id}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          {/* Matéria Info */}
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: mc.materia.cor }} />
+                            <span className="font-bold text-white text-xs shrink-0">{mc.materia.sigla}</span>
+                            <span className="text-[#94A3B8] text-[11px] truncate">{mc.materia.nome}</span>
+                            {mc.isCustom && (
+                              <span className="text-[9px] font-black uppercase tracking-widest px-1 py-0.5 rounded bg-[#C5A059]/20 text-[#C5A059] shrink-0">Manual</span>
+                            )}
                           </div>
-                          <div className="font-mono text-xs flex gap-2">
-                            <span className="text-[#C5A059] font-medium">{formatarTempo(mc.minutosSemanais)}/sem</span>
-                            <span className="text-[#64748B]">({formatarTempo(mc.minutosDiarios)}/dia)</span>
-                          </div>
+
+                          {/* Controle de tempo — toggle entre display e input */}
+                          {isEdit ? (
+                            <form
+                              className="flex items-center gap-1 shrink-0"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                const val = parseInt(editandoMinutos[mc.materia.id] || '0', 10);
+                                if (!isNaN(val)) setMinutosCustom(mc.materia.id, val);
+                                setEditandoMinutos(prev => { const n = {...prev}; delete n[mc.materia.id]; return n; });
+                              }}
+                            >
+                              <input
+                                type="number"
+                                min="0"
+                                max="10080"
+                                step="5"
+                                autoFocus
+                                value={editandoMinutos[mc.materia.id]}
+                                onChange={(e) => setEditandoMinutos(prev => ({ ...prev, [mc.materia.id]: e.target.value }))}
+                                onBlur={(e) => {
+                                  const val = parseInt(e.target.value || '0', 10);
+                                  if (!isNaN(val)) setMinutosCustom(mc.materia.id, val);
+                                  setEditandoMinutos(prev => { const n = {...prev}; delete n[mc.materia.id]; return n; });
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Escape') {
+                                    setEditandoMinutos(prev => { const n = {...prev}; delete n[mc.materia.id]; return n; });
+                                  }
+                                }}
+                                className="w-[72px] bg-[#0C0E12] border border-[#C5A059] rounded px-2 py-1 text-xs text-white font-mono outline-none focus:ring-1 focus:ring-[#C5A059]"
+                                placeholder="min/sem"
+                                title="Minutos por semana"
+                              />
+                              <span className="text-[#64748B] text-[10px] font-mono">min/sem</span>
+                              <button type="submit" className="text-emerald-400 hover:text-emerald-300 transition-colors" title="Confirmar">
+                                <Check size={13} />
+                              </button>
+                            </form>
+                          ) : (
+                            <button
+                              type="button"
+                              className="flex items-center gap-1.5 group cursor-pointer shrink-0"
+                              title="Clique para ajustar manualmente"
+                              onClick={() => setEditandoMinutos(prev => ({
+                                ...prev,
+                                [mc.materia.id]: String(Math.round(mc.minutosSemanais))
+                              }))}
+                            >
+                              <div className="font-mono text-xs text-right">
+                                <span className="text-[#C5A059] font-semibold">{formatarTempo(mc.minutosSemanais)}/sem</span>
+                                <span className="text-[#64748B] block text-[10px]">({formatarTempo(mc.minutosDiarios)}/dia)</span>
+                              </div>
+                              <span className="text-[#475569] group-hover:text-[#C5A059] transition-colors" title="Editar">
+                                <Settings size={12} />
+                              </span>
+                            </button>
+                          )}
                         </div>
-                        
-                        {/* Barra Horizonal Progress */}
+
+                        {/* Barra de Progresso */}
                         <div className="w-full bg-[#0C0E12] h-1.5 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full rounded-full transition-all duration-500" 
-                            style={{ 
-                              width: `${mc.porcentagem}%`, 
-                              backgroundColor: mc.materia.cor 
-                            }} 
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${Math.min(100, mc.porcentagem)}%`, backgroundColor: mc.materia.cor }}
                           />
                         </div>
                       </div>
                     );
                   })}
                 </div>
+
+                {/* Rodapé: botão de reset */}
+                {temAlgumCustom && (
+                  <div className="pt-2 border-t border-[#1E293B] flex justify-end">
+                    <button
+                      type="button"
+                      onClick={resetMinutosCustom}
+                      className="flex items-center gap-1.5 text-[11px] text-[#64748B] hover:text-red-400 transition-colors cursor-pointer"
+                    >
+                      <Trash2 size={11} /> Resetar todos os ajustes manuais
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-6 text-[#64748B] text-xs">

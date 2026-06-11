@@ -78,14 +78,24 @@ ${simuladosResumo}
 ### Últimas Sessões de Estudo Registradas:
 ${historicoResumo}
 
-### Instruções para a Resposta:
-Crie um relatório estruturado no formato Markdown com os seguintes tópicos (use títulos elegantes, com emojis adequados para a área de controle):
-1. **📊 Diagnóstico Geral**: Avaliação sobre se a carga horária e taxa de acerto estão saudáveis para o TCU (lembrando que para o TCU, índices acima de 80-85% são o alvo seguro devido ao peso da banca FGV).
-2. **🔥 Alerta de Fraqueza (Prioridade Máxima)**: Identifique qual ou quais matérias merecem atenção imediata baseando-se em menor índice de acerto ou aulas paradas. Explique por que especificamente essa matéria é perigosa no TCU (ex: Contabilidade Pública, Estatística ou TI na FGV são devastadoras).
-3. **🎯 Recomendações Críticas para o Ciclo**: Dicas acionáveis para ajustar o seu Ciclo de Estudos e sua rotina de Revisões Espaçadas.
-4. **⏱️ Plano Próximo Passo**: Um roteiro simples de 2 ou 3 passos para o usuário seguir hoje mesmo de forma prática e disciplinada.
+### Instruções Cruciais de Estrutura da Resposta:
+Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag indicados abaixo. Não coloque nenhum texto fora delas:
 
-Mantenha uma linguagem acadêmica, séria e focada na excelência que o cargo de Auditor exige. Não use placeholders nem invente dados que não faça parte das estatísticas fornecidas.`;
+[DIAGNOSTICO_GERAL]
+(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 80-85% pela banca FGV para o TCU.)
+
+[ALERTA_FRAQUEZA]
+(Identifique e disserte sobre as matérias com pior desempenho ou inércia de estudos, alertando sobre o risco estatístico destas no edital do TCU.)
+
+[RECOMENDACOES]
+(Dicas práticas de remediação para o ciclo de estudos e gestão de revisões espaçadas.)
+
+[PASSOS]
+- [ ] Passo 1
+- [ ] Passo 2
+(Defina um checklist com 2 ou 3 passos de ação imediata que o usuário deve seguir hoje. Utilize obrigatoriamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
+
+Mantenha uma linguagem acadêmica, séria e focada na excelência profissional que o cargo de Auditor exige.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",

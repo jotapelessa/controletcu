@@ -15,8 +15,11 @@ import {
   FileJson, 
   AlertCircle,
   Database,
-  Info
+  Info,
+  Sparkles
 } from 'lucide-react';
+import { gerarDadosSimuladosExtrema } from '../utils/seeder';
+
 
 interface AppBackup {
   version: string;
@@ -438,6 +441,32 @@ export default function DadosEBackup({
     onResetGeral(false);
   };
 
+  const handleCarregarSimulacaoIA = () => {
+    if (confirm("⚠️ ATENÇÃO: Esta ação irá sobrescrever o seu progresso local para carregar os dados de simulação de 120h/semana por 3 meses. Deseja prosseguir?")) {
+      try {
+        const dadosSimulados = gerarDadosSimuladosExtrema();
+        
+        onImportBackup({
+          version: "1.2.0",
+          timestamp: new Date().toISOString(),
+          materias: dadosSimulados.materias,
+          ciclo: dadosSimulados.ciclo,
+          simulados: dadosSimulados.simulados,
+          revisoes: dadosSimulados.revisoes,
+          historico: dadosSimulados.historico
+        });
+
+        setSuccessMsg('⚡ Dados de simulação extrema carregados com sucesso! Atualizando painel...');
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } catch (err: any) {
+        setErrorMsg('Erro ao gerar dados de simulação: ' + err.message);
+      }
+    }
+  };
+
+
   return (
     <div className="space-y-6 animate-editorial-node" id="dados-backup-seccao">
       
@@ -790,7 +819,38 @@ export default function DadosEBackup({
 
           </div>
 
-          {/* CARD 2: ZONA DE PERIGO (RESET DATA) */}
+          {/* CARD 2: SIMULAÇÃO PARA TESTE (IA COACH) */}
+          <div className="bg-[#0F172A] border border-[#C5A059]/20 rounded p-5 space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#1E293B]/80 pb-3">
+              <Sparkles size={16} className="text-[#C5A059]" />
+              <h3 className="text-sm font-display font-medium text-white tracking-widest uppercase">Simulação para IA Coach</h3>
+            </div>
+
+            <p className="text-xs text-[#94A3B8] leading-relaxed font-sans">
+              Deseja testar as respostas e relatórios do <strong>IA Tutor Coach</strong> sem precisar preencher dados reais? Carregue um histórico simulado de alta performance.
+            </p>
+
+            <div className="bg-[#C5A059]/5 border border-[#C5A059]/20 text-xs text-[#94A3B8] p-3.5 rounded space-y-1.5 font-sans">
+              <p className="font-bold text-[#C5A059] flex items-center gap-1.5">⚡ O que será gerado:</p>
+              <ul className="list-disc pl-4 space-y-1 text-[11px] text-[#A0AEC0]">
+                <li>Histórico denso de <strong>3 meses (90 dias)</strong> de estudo.</li>
+                <li><strong>Carga Horária Extrema: 120h/semana</strong> de estudo líquido.</li>
+                <li>Métricas de acertos realistas: de <strong>78% a 93%</strong>.</li>
+                <li>Simulados FGV periódicos com evolução de notas.</li>
+                <li>Revisões espaçadas ativas concluídas e pendentes.</li>
+              </ul>
+            </div>
+
+            <button
+              onClick={handleCarregarSimulacaoIA}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#C5A059] text-black hover:bg-[#C5A059]/90 font-bold text-xs rounded transition-all cursor-pointer shadow-sm font-sans"
+            >
+              <Sparkles size={13} />
+              Carregar Dados de Simulação (120h/semana)
+            </button>
+          </div>
+
+          {/* CARD 3: ZONA DE PERIGO (RESET DATA) */}
           <div className="bg-[#0F172A] border border-rose-950/40 rounded p-5 space-y-4">
             
             <div className="flex items-center gap-2 border-b border-rose-950/30 pb-3 text-rose-400">

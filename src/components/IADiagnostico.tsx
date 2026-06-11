@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Materia, Simulado, LogSessao } from '../types';
-import { Sparkles, BarChart2, CheckCircle, RefreshCcw, BookOpen, Clock, Award, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Materia, Simulado, LogSessao, StatusAula } from '../types';
+import { Sparkles, BarChart2, CheckCircle, RefreshCcw, BookOpen, Clock, Award, ShieldAlert, AlertTriangle, TrendingUp } from 'lucide-react';
+
 
 interface IAProps {
   materias: Materia[];
@@ -14,8 +15,9 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     return localStorage.getItem('tcu_ia_diagnostico_recente') || null;
   });
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [checklistStatus, setChecklistStatus] = useState<boolean[]>([]);
 
-  // Calcular estatísticas totais para enviar
+  // Calcular estatísticas totais para enviar e exibir
   let totalHoras = 0;
   let totalQuestoes = 0;
   let totalAcertos = 0;
@@ -28,11 +30,132 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     });
   });
 
+  // 1. Carga Horária nos últimos 7 dias
+  const agora = new Date();
+  const seteDiasAtras = new Date();
+  seteDiasAtras.setDate(agora.getDate() - 7);
+  
+  let horasUltimaSemana = 0;
+  historico.forEach(log => {
+    const dataLog = new Date(log.data);
+    if (dataLog >= seteDiasAtras && dataLog <= agora) {
+      horasUltimaSemana += log.duracaoMinutos / 60;
+    }
+  });
+
+  // 2. Pior Matéria (Ponto Crítico)
+  let piorMateriaNome = "Nenhuma";
+  let piorMateriaSigla = "";
+  let piorMateriaAcerto = 100;
+  
+  materias.forEach(m => {
+    let resolv = 0;
+    let acert = 0;
+    m.aulas.forEach(a => {
+      resolv += (a.questoesResolvidas || 0);
+      acert += (a.questoesAcertadas || 0);
+    });
+    
+    if (resolv > 0) {
+      const taxa = (acert / resolv) * 100;
+      if (taxa < piorMateriaAcerto) {
+        piorMateriaAcerto = taxa;
+        piorMateriaNome = m.nome;
+        piorMateriaSigla = m.sigla;
+      }
+    }
+  });
+
+  // 3. Progresso do Edital
+  let totalAulas = 0;
+  let aulasConcluidas = 0;
+  materias.forEach(m => {
+    totalAulas += m.aulas.length;
+    aulasConcluidas += m.aulas.filter(a => a.status === StatusAula.Concluido).length;
+  });
+  const pctEdital = totalAulas > 0 ? Math.round((aulasConcluidas / totalAulas) * 100) : 0;
+
+  // Parser de Seções do Diagnóstico
+  const obterDiagnosticoEstruturado = (text: string | null) => {
+    if (!text) return null;
+
+    const secoes = {
+      geral: '',
+      alerta: '',
+      recomendacoes: '',
+      passos: [] as string[]
+    };
+
+    const idxGeral = text.indexOf('[DIAGNOSTICO_GERAL]');
+    const idxAlerta = text.indexOf('[ALERTA_FRAQUEZA]');
+    const idxRecomendacoes = text.indexOf('[RECOMENDACOES]');
+    const idxPassos = text.indexOf('[PASSOS]');
+
+    if (idxGeral === -1 && idxAlerta === -1 && idxRecomendacoes === -1 && idxPassos === -1) {
+      secoes.geral = text;
+      return secoes;
+    }
+
+    const obterSubtexto = (inicioIdx: number, fimIdx: number) => {
+      if (inicioIdx === -1) return '';
+      const sub = text.substring(inicioIdx);
+      const nextLineIdx = sub.indexOf('\n');
+      const start = inicioIdx + (nextLineIdx !== -1 ? nextLineIdx + 1 : 0);
+      const end = fimIdx !== -1 ? fimIdx : text.length;
+      return text.substring(start, end).trim();
+    };
+
+    secoes.geral = obterSubtexto(idxGeral, idxAlerta !== -1 ? idxAlerta : (idxRecomendacoes !== -1 ? idxRecomendacoes : idxPassos));
+    secoes.alerta = obterSubtexto(idxAlerta, idxRecomendacoes !== -1 ? idxRecomendacoes : idxPassos);
+    secoes.recomendacoes = obterSubtexto(idxRecomendacoes, idxPassos);
+    
+    const passosTexto = obterSubtexto(idxPassos, -1);
+    if (passosTexto) {
+      const linhas = passosTexto.split('\n');
+      linhas.forEach(linha => {
+        const trimmed = linha.trim();
+        if (trimmed.startsWith('- [ ]') || trimmed.startsWith('- [x]') || trimmed.startsWith('* [ ]') || trimmed.startsWith('* [x]')) {
+          secoes.passos.push(trimmed.replace(/^[-*]\s*\[[ x]\]\s*/i, '').trim());
+        } else if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+          secoes.passos.push(trimmed.replace(/^[-*]\s*/, '').trim());
+        } else if (trimmed.length > 3 && !trimmed.startsWith('[PASSOS]')) {
+          secoes.passos.push(trimmed);
+        }
+      });
+    }
+
+    return secoes;
+  };
+
+  const secoes = obterDiagnosticoEstruturado(diagnostico);
+
+  useEffect(() => {
+    if (secoes && secoes.passos.length > 0) {
+      const saved = localStorage.getItem('tcu_ia_checklist_status');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length === secoes.passos.length) {
+            setChecklistStatus(parsed);
+            return;
+          }
+        } catch(e) {}
+      }
+      setChecklistStatus(new Array(secoes.passos.length).fill(false));
+    }
+  }, [diagnostico]);
+
+  const toggleChecklist = (idx: number) => {
+    const nextStatus = [...checklistStatus];
+    nextStatus[idx] = !nextStatus[idx];
+    setChecklistStatus(nextStatus);
+    localStorage.setItem('tcu_ia_checklist_status', JSON.stringify(nextStatus));
+  };
+
   const triggerDiagnostic = async () => {
     setLoading(true);
     setLoadingMessage("Analisando seu desempenho e consolidação do edital do Estratégia...");
     
-    // Simulação de passos de IA para deixar o carregador mega envolvente
     const steps = [
       "Calculando média harmônica de erros na banca FGV...",
       "Cruzando seu histórico de Controle Externo (RITCU) com o de AFO...",
@@ -205,34 +328,189 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
       )}
 
       {/* RENDERIZADOR DO DIAGNÓSTICO DE IA */}
-      {!loading && diagnostico && (
-        <div className="bg-[#0F172A] border border-[#1E293B] rounded p-6 shadow-sm relative animate-scale-up" id="ai-results-panel">
+      {!loading && diagnostico && secoes && (
+        <div className="space-y-6 animate-scale-up" id="ai-results-panel">
           
-          {/* Header do painel de resultado */}
-          <div className="flex justify-between items-center pb-4 border-b border-[#1E293B] mb-6" id="ai-results-header">
-            <h3 className="text-xs font-mono font-bold text-[#E2E8F0] flex items-center gap-2 tracking-wider uppercase">
-              <Award size={14} className="text-[#C5A059]" />
-              Laudo Técnico do Coach (TCU Auditor)
-            </h3>
+          {/* BARRA DE METRICAS RAPIDAS (ROW 1) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4" id="ai-metricas-rapidas">
+            
+            {/* Carga de Horas */}
+            <div className={`p-4 rounded border flex items-center gap-3.5 ${
+              horasUltimaSemana > 50 
+                ? 'bg-rose-950/20 border-rose-500/30 text-rose-300' 
+                : horasUltimaSemana > 30 
+                ? 'bg-amber-950/20 border-amber-500/30 text-amber-300' 
+                : 'bg-emerald-950/20 border-emerald-500/30 text-emerald-300'
+            }`}>
+              <div className={`p-2.5 rounded-full shrink-0 ${
+                horasUltimaSemana > 50 
+                  ? 'bg-rose-500/10 text-rose-400' 
+                  : horasUltimaSemana > 30 
+                  ? 'bg-amber-500/10 text-amber-400' 
+                  : 'bg-emerald-500/10 text-emerald-400'
+              }`}>
+                <Clock size={16} className={horasUltimaSemana > 50 ? 'animate-pulse' : ''} />
+              </div>
+              <div className="font-sans">
+                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Carga Horária (7d)</span>
+                <span className="text-xs font-bold">
+                  {horasUltimaSemana > 50 
+                    ? `⚠️ Fadiga Crítica (${horasUltimaSemana.toFixed(1)}h)` 
+                    : horasUltimaSemana > 30 
+                    ? `⚡ Carga Intensa (${horasUltimaSemana.toFixed(1)}h)` 
+                    : `✅ Ritmo Saudável (${horasUltimaSemana.toFixed(1)}h)`
+                  }
+                </span>
+              </div>
+            </div>
+
+            {/* Matéria Frágil */}
+            <div className="p-4 bg-slate-900/40 border border-[#1E293B] rounded flex items-center gap-3.5 text-[#E2E8F0]">
+              <div className="p-2.5 bg-rose-500/10 text-rose-400 rounded-full shrink-0">
+                <AlertTriangle size={16} />
+              </div>
+              <div className="font-sans">
+                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Ponto Crítico</span>
+                <span className="text-xs font-bold">
+                  {piorMateriaSigla 
+                    ? `🔥 ${piorMateriaSigla} (${Math.round(piorMateriaAcerto)}% acerto)` 
+                    : '📚 Sem dados de acerto'
+                  }
+                </span>
+              </div>
+            </div>
+
+            {/* Cobertura de Edital */}
+            <div className="p-4 bg-slate-900/40 border border-[#1E293B] rounded flex items-center gap-3.5 text-[#E2E8F0]">
+              <div className="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-full shrink-0">
+                <TrendingUp size={16} />
+              </div>
+              <div className="flex-1 font-sans">
+                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Edital Concluído</span>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs font-bold">{pctEdital}%</span>
+                  <div className="flex-1 bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                    <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${pctEdital}%` }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          {/* GRID BENTO DE CONTEUDO (ROW 2) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* COLUNA ESQUERDA: DIAGNOSTICO E ALERTAS (7 COLUNAS) */}
+            <div className="lg:col-span-7 space-y-6">
+              
+              {/* Box 1: Diagnóstico Geral */}
+              {secoes.geral && (
+                <div className="bg-[#0F172A] border border-[#1E293B] rounded p-5 space-y-4">
+                  <div className="flex items-center gap-2 border-b border-[#1E293B]/80 pb-3">
+                    <Award size={16} className="text-[#C5A059]" />
+                    <h3 className="text-xs font-mono font-bold text-white tracking-widest uppercase">Diagnóstico Geral do Coach</h3>
+                  </div>
+                  <div className="prose prose-invert max-w-none text-[#E2E8F0] leading-relaxed font-sans space-y-1">
+                    {renderMarkdown(secoes.geral)}
+                  </div>
+                </div>
+              )}
+
+              {/* Box 2: Alertas de Fraqueza */}
+              {secoes.alerta && (
+                <div className="bg-gradient-to-br from-slate-950 via-[#0F172A] to-rose-950/15 border border-rose-500/20 rounded p-5 space-y-4">
+                  <div className="flex items-center gap-2 border-b border-rose-950/30 pb-3 text-rose-400">
+                    <ShieldAlert size={16} />
+                    <h3 className="text-xs font-mono font-bold tracking-widest uppercase">Zonas de Vulnerabilidade FGV</h3>
+                  </div>
+                  <div className="prose prose-invert max-w-none text-rose-100 leading-relaxed font-sans space-y-1">
+                    {renderMarkdown(secoes.alerta)}
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* COLUNA DIREITA: RECOMENDAÇÕES E CHECKLIST INTERATIVO (5 COLUNAS) */}
+            <div className="lg:col-span-5 space-y-6">
+              
+              {/* Box 1: Checklist de Próximos Passos */}
+              {secoes.passos.length > 0 && (
+                <div className="bg-[#0F172A] border border-[#C5A059]/20 rounded p-5 space-y-4">
+                  <div className="flex items-center justify-between border-b border-[#1E293B]/80 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={16} className="text-[#C5A059]" />
+                      <h3 className="text-xs font-mono font-bold text-white tracking-widest uppercase">Plano Próximo Passo</h3>
+                    </div>
+                    <span className="text-[9px] font-mono bg-[#C5A059]/10 text-[#C5A059] border border-[#C5A059]/20 px-2 py-0.5 rounded uppercase">
+                      Roadmap
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-[#64748B] leading-normal font-sans">
+                    Execute estas tarefas hoje mesmo para implementar as recomendações do Coach:
+                  </p>
+
+                  <div className="space-y-2.5 pt-1">
+                    {secoes.passos.map((passo, pIdx) => {
+                      const isCompleted = checklistStatus[pIdx] || false;
+                      return (
+                        <div 
+                          key={pIdx} 
+                          onClick={() => toggleChecklist(pIdx)}
+                          className={`flex items-start gap-3 p-3 rounded border cursor-pointer transition-all ${
+                            isCompleted 
+                              ? 'bg-emerald-950/10 border-emerald-500/20 text-emerald-400/80 line-through' 
+                              : 'bg-[#0C0E12] border-[#1E293B] text-white hover:border-[#C5A059]/30'
+                          }`}
+                        >
+                          <input 
+                            type="checkbox" 
+                            checked={isCompleted}
+                            readOnly
+                            className="mt-0.5 rounded border-[#1E293B] text-[#C5A059] focus:ring-0 cursor-pointer"
+                          />
+                          <span className="text-xs font-sans font-medium leading-relaxed">
+                            {passo}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Box 2: Recomendações Críticas do Ciclo */}
+              {secoes.recomendacoes && (
+                <div className="bg-[#0F172A] border border-[#1E293B] rounded p-5 space-y-4">
+                  <div className="flex items-center gap-2 border-b border-[#1E293B]/80 pb-3">
+                    <BarChart2 size={16} className="text-[#C5A059]" />
+                    <h3 className="text-xs font-mono font-bold text-white tracking-widest uppercase">Recomendações do Ciclo</h3>
+                  </div>
+                  <div className="prose prose-invert max-w-none text-[#94A3B8] leading-relaxed font-sans space-y-1">
+                    {renderMarkdown(secoes.recomendacoes)}
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+          </div>
+
+          {/* BOTAO PARA RECALCULAR NO FOOTER */}
+          <div className="flex flex-col sm:flex-row justify-between items-center bg-[#0F172A] border border-[#1E293B] p-4 rounded gap-4">
+            <span className="text-[10px] text-[#64748B] font-mono leading-normal text-center sm:text-left">
+              💡 Este laudo foi gerado interpretando o conteúdo real de AFO, Direito Constitucional, Administrativo, TI e Controle Externo.
+            </span>
             <button
               onClick={triggerDiagnostic}
-              className="text-[11px] font-bold text-[#C5A059] hover:text-[#C5A059]/90 flex items-center gap-1.5 bg-[#1E293B] hover:bg-[#1E293B]/80 border border-[#2D3748] px-3 py-1.5 rounded transition-all font-sans cursor-pointer"
+              className="w-full sm:w-auto text-[11px] font-bold text-black bg-[#C5A059] hover:bg-[#C5A059]/90 px-4 py-2 rounded transition-all font-sans cursor-pointer flex items-center justify-center gap-1.5 shrink-0"
             >
               <RefreshCcw size={11} /> Recalcular Laudo
             </button>
           </div>
 
-          {/* Área de Texto do Markdown renderizado */}
-          <div className="prose prose-invert max-w-none text-[#E2E8F0] leading-relaxed font-sans space-y-1" id="markdown-response-container">
-            {renderMarkdown(diagnostico)}
-          </div>
-
-          <div className="bg-[#1E293B]/20 p-4 rounded mt-6 border border-[#2D3748] text-[10px] text-[#94A3B8] leading-relaxed flex items-start gap-2.5 font-sans">
-            <CheckCircle size={14} className="text-[#C5A059] shrink-0 mt-0.5" />
-            <p>
-              Este laudo foi gerado interpretando o conteúdo programático real das respectivas aulas de <strong>AFO, Direito Constitucional, Administrativo, TI e Controle Externo</strong> do material preparatório principal da banca. A inteligência de estudos considera aprovação com margem de segurança de ~82% de acertos gerais em simulados FGV.
-            </p>
-          </div>
         </div>
       )}
 

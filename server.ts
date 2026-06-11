@@ -4,11 +4,13 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import rateLimit from "express-rate-limit";
+import * as cheerio from 'cheerio';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
@@ -30,6 +32,49 @@ const ai = new GoogleGenAI({
     headers: {
       'User-Agent': 'aistudio-build',
     }
+  }
+});
+
+// Endpoint Scraper Estratégia
+app.post("/api/scraper", async (req, res) => {
+  const { url } = req.body;
+  if (!url || !url.includes('estrategiaconcursos.com.br')) {
+    return res.status(400).json({ error: 'URL inválida. Forneça um link do Estratégia Concursos.' });
+  }
+  try {
+    const fetchResponse = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+    if (!fetchResponse.ok) throw new Error(`Status ${fetchResponse.status}`);
+    const html = await fetchResponse.text();
+    const $ = cheerio.load(html);
+    const pageText = $('body').text();
+    const regex = /Aula\s+(\d{1,2})\s*[-–:]?\s*([^\n\r]+)/gi;
+    const aulasExtraidas: { numero: number; titulo: string }[] = [];
+    const numerosEncontrados = new Set<number>();
+    let match;
+    while ((match = regex.exec(pageText)) !== null) {
+      const numero = parseInt(match[1], 10);
+      let titulo = match[2].trim().replace(/\s+/g, ' ');
+      if (!numerosEncontrados.has(numero) && titulo.length > 3) {
+        numerosEncontrados.add(numero);
+        aulasExtraidas.push({ numero, titulo: `Aula ${numero.toString().padStart(2, '0')} - ${titulo}` });
+      }
+    }
+    aulasExtraidas.sort((a, b) => a.numero - b.numero);
+    const cursoNome = $('title').text().split('-')[0].trim();
+    return res.status(200).json({
+      curso: cursoNome,
+      totalAulas: aulasExtraidas.length,
+      aulas: aulasExtraidas,
+      sucesso: aulasExtraidas.length > 0
+    });
+  } catch (error: any) {
+    console.error('Erro no scraper local:', error);
+    return res.status(500).json({ error: 'Falha ao processar o link. O site pode ter bloqueado o acesso.', detalhes: error.message });
   }
 });
 
@@ -85,14 +130,24 @@ ${simuladosResumo}
 ### Últimas Sessões de Estudo Registradas:
 ${historicoResumo}
 
-### Instruções para a Resposta:
-Crie um relatório estruturado no formato Markdown com os seguintes tópicos (use títulos elegantes, com emojis adequados para a área de controle):
-1. **📊 Diagnóstico Geral**: Avaliação sobre se a carga horária e taxa de acerto estão saudáveis para o TCU (lembrando que para o TCU, índices acima de 80-85% são o alvo seguro devido ao peso da banca FGV).
-2. **🔥 Alerta de Fraqueza (Prioridade Máxima)**: Identifique qual ou quais matérias merecem atenção imediata baseando-se em menor índice de acerto ou aulas paradas. Explique por que especificamente essa matéria é perigosa no TCU (ex: Contabilidade Pública, Estatística ou TI na FGV são devastadoras).
-3. **🎯 Recomendações Críticas para o Ciclo**: Dicas acionáveis para ajustar o seu Ciclo de Estudos e sua rotina de Revisões Espaçadas.
-4. **⏱️ Plano Próximo Passo**: Um roteiro simples de 2 ou 3 passos para o usuário seguir hoje mesmo de forma prática e disciplinada.
+### Instruções Cruciais de Estrutura da Resposta:
+Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag indicados abaixo. Não coloque nenhum texto fora delas:
 
-Mantenha uma linguagem acadêmica, séria e focada na excelência que o cargo de Auditor exige. Não use placeholders nem invente dados que não faça parte das estatísticas fornecidas.`;
+[DIAGNOSTICO_GERAL]
+(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 80-85% pela banca FGV para o TCU.)
+
+[ALERTA_FRAQUEZA]
+(Identifique e disserte sobre as matérias com pior desempenho ou inércia de estudos, alertando sobre o risco estatístico destas no edital do TCU.)
+
+[RECOMENDACOES]
+(Dicas práticas de remediação para o ciclo de estudos e gestão de revisões espaçadas.)
+
+[PASSOS]
+- [ ] Passo 1
+- [ ] Passo 2
+(Defina um checklist com 2 ou 3 passos de ação imediata que o usuário deve seguir hoje. Utilize obrigatoriamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
+
+Mantenha uma linguagem acadêmica, séria e focada na excelência profissional que o cargo de Auditor exige.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
