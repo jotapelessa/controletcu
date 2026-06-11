@@ -408,8 +408,43 @@ export default function App() {
             </div>
           </div>
 
-          {/* User Welcome and resets */}
-          <div className="flex items-center space-x-4" id="brand-user-area">
+          {/* User Welcome and cloud sync actions */}
+          <div className="flex items-center gap-3" id="brand-user-area">
+            
+            {/* CLOUD SYNC STATUS — visível no header */}
+            {isSupabaseConfigured && (
+              userSession ? (
+                /* Logado: mostra email + status + botão de logout */
+                <div className="flex items-center gap-2.5 bg-[#1E293B]/60 border border-emerald-500/20 rounded px-3 py-1.5" id="cloud-status-logged">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
+                  <div className="hidden sm:block text-right">
+                    <span className="text-[9px] text-emerald-400 block font-mono uppercase tracking-wider">Nuvem Ativa</span>
+                    <span className="text-[10px] text-[#94A3B8] font-mono truncate max-w-[140px] block">{userSession.user?.email}</span>
+                  </div>
+                  {isSyncingCloud && (
+                    <CheckCircle size={12} className="text-emerald-400 animate-spin" />
+                  )}
+                  <button
+                    onClick={handleLogout}
+                    className="text-[9px] text-rose-400 hover:text-rose-300 font-mono ml-1 cursor-pointer"
+                    title="Sair da conta"
+                  >
+                    <LogOut size={12} />
+                  </button>
+                </div>
+              ) : (
+                /* Deslogado: botão proeminente de login */
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-[#C5A059]/10 border border-[#C5A059]/40 hover:bg-[#C5A059]/20 text-[#C5A059] rounded text-[11px] font-bold tracking-wide transition-all cursor-pointer font-mono"
+                  id="btn-cloud-login"
+                >
+                  <User size={13} />
+                  Entrar na Nuvem
+                </button>
+              )
+            )}
+
             <div className="text-right hidden md:block">
               <span className="text-[10px] text-[#64748B] tracking-widest uppercase block font-mono">Assinante Premium</span>
               <span className="text-xs font-serif italic text-[#C5A059]">Plano TCU Auditor de Controle</span>
@@ -430,6 +465,7 @@ export default function App() {
 
         </div>
       </header>
+
 
       {/* PAINEL DE NAVEGAÇÃO DE PÁGINAS (TABS) */}
       <nav className="bg-[#0C0E12] border-b border-[#1E293B] sticky top-0 z-40" id="tcu-navigation-rail">
