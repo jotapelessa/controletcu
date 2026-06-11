@@ -37,6 +37,12 @@ interface DadosEBackupProps {
   historico: LogSessao[];
   onImportBackup: (backup: AppBackup) => void;
   onResetGeral: (confirmar?: boolean) => void;
+  userEmail?: string;
+  onOpenAuth: () => void;
+  onLogout: () => void;
+  onSyncCloud: () => Promise<void>;
+  isSyncingCloud?: boolean;
+  lastSyncCloudTime?: string;
 }
 
 interface GitHubProfile {
@@ -53,7 +59,13 @@ export default function DadosEBackup({
   revisoes,
   historico,
   onImportBackup,
-  onResetGeral
+  onResetGeral,
+  userEmail,
+  onOpenAuth,
+  onLogout,
+  onSyncCloud,
+  isSyncingCloud = false,
+  lastSyncCloudTime
 }: DadosEBackupProps) {
   // Local Stats & General State
   const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
@@ -464,24 +476,92 @@ export default function DadosEBackup({
       {/* GRID DE FUNCIONALIDADES */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
-        {/* COLUNA ESQUERDA: BACKUP GITHUB (6 COLUNAS) */}
-        <div className="lg:col-span-7 bg-[#0F172A] border border-[#1E293B] rounded flex flex-col overflow-hidden">
-          
-          {/* Header Card */}
-          <div className="border-b border-[#1E293B] bg-[#0F172A]/80 p-4 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Github size={18} className="text-[#C5A059]" />
-              <h3 className="text-sm font-display font-medium text-white tracking-widest uppercase">Salvar Backup Oficial no GitHub</h3>
+        {/* COLUNA ESQUERDA: NUVEM SUPABASE & BACKUP GITHUB (7 COLUNAS) */}
+        <div className="lg:col-span-7 space-y-6">
+
+          {/* CARD 1: NUVEM SUPABASE */}
+          <div className="bg-[#0F172A] border border-[#1E293B] rounded flex flex-col overflow-hidden">
+            <div className="border-b border-[#1E293B] bg-[#0F172A]/80 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Cloud size={18} className="text-[#C5A059]" />
+                <h3 className="text-sm font-display font-medium text-white tracking-widest uppercase">Sincronização na Nuvem (Supabase)</h3>
+              </div>
+              <span className="text-[9px] font-mono bg-[#C5A059]/10 text-[#C5A059] border border-[#C5A059]/20 px-2 py-0.5 rounded uppercase">
+                Cloud Sync
+              </span>
             </div>
-            <span className="text-[9px] font-mono bg-[#C5A059]/10 text-[#C5A059] border border-[#C5A059]/20 px-2 py-0.5 rounded uppercase">
-              Cloud Gist Link
-            </span>
+
+            <div className="p-5 flex-1 space-y-4">
+              <p className="text-xs text-[#94A3B8] leading-relaxed">
+                Sincronize todo o seu progresso (horas líquidas, edital do Estratégia Concursos, simulados e metas) de forma automática e segura em tempo real na nuvem do Supabase.
+              </p>
+
+              {userEmail ? (
+                <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-4 space-y-4">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <div>
+                      <span className="text-[#64748B] block text-[9px] uppercase tracking-wider">Conta Conectada</span>
+                      <span className="text-white font-bold">{userEmail}</span>
+                    </div>
+                    <button
+                      onClick={onLogout}
+                      className="text-[9px] px-2.5 py-1.5 rounded border border-rose-950 bg-rose-950/20 text-rose-400 hover:bg-[#881337] hover:text-white transition-all cursor-pointer font-mono"
+                    >
+                      Sair da Conta
+                    </button>
+                  </div>
+
+                  <div className="pt-3 border-t border-[#1E293B]/60 space-y-2">
+                    <div className="flex justify-between text-[11px] font-mono">
+                      <span className="text-[#64748B]">Último sincronismo em nuvem:</span>
+                      <span className="text-emerald-400 font-bold font-mono">
+                        {lastSyncCloudTime || 'Nunca sincronizado'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={onSyncCloud}
+                    disabled={isSyncingCloud}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#C5A059] text-black font-semibold text-xs rounded hover:bg-[#C5A059]/90 disabled:opacity-50 transition-all cursor-pointer shadow-sm font-sans"
+                  >
+                    <RefreshCw size={13} className={isSyncingCloud ? "animate-spin" : ""} />
+                    {isSyncingCloud ? 'Sincronizando...' : 'Forçar Sincronismo na Nuvem'}
+                  </button>
+                </div>
+              ) : (
+                <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-4.5 text-center space-y-3.5">
+                  <div className="text-xs text-[#94A3B8] leading-relaxed">
+                    Você está estudando em modo local. Seus dados são salvos apenas neste navegador. Conecte sua conta para habilitar o backup automático.
+                  </div>
+                  <button
+                    onClick={onOpenAuth}
+                    className="w-full py-2.5 bg-[#1E293B] border border-[#C5A059] text-[#C5A059] hover:bg-[#C5A059] hover:text-black font-semibold text-xs rounded transition-all cursor-pointer flex items-center justify-center gap-1.5 font-sans"
+                  >
+                    <Cloud size={14} />
+                    Conectar Conta / Fazer Login
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="p-5 flex-1 space-y-4">
-            <p className="text-xs text-[#94A3B8] leading-relaxed">
-              Diga adeus a perder o progresso se mudar de computador ou limpar os cookies! Esta ferramenta faz o backup criptografado do seu progresso em um arquivo privado (Gist) no seu próprio GitHub.
-            </p>
+          {/* CARD 2: BACKUP GITHUB */}
+          <div className="bg-[#0F172A] border border-[#1E293B] rounded flex flex-col overflow-hidden">
+            <div className="border-b border-[#1E293B] bg-[#0F172A]/80 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Github size={18} className="text-[#C5A059]" />
+                <h3 className="text-sm font-display font-medium text-white tracking-widest uppercase">Salvar Backup Oficial no GitHub</h3>
+              </div>
+              <span className="text-[9px] font-mono bg-[#C5A059]/10 text-[#C5A059] border border-[#C5A059]/20 px-2 py-0.5 rounded uppercase">
+                Cloud Gist Link
+              </span>
+            </div>
+
+            <div className="p-5 flex-1 space-y-4">
+              <p className="text-xs text-[#94A3B8] leading-relaxed">
+                Diga adeus a perder o progresso se mudar de computador ou limpar os cookies! Esta ferramenta faz o backup criptografado do seu progresso em um arquivo privado (Gist) no seu próprio GitHub.
+              </p>
 
             {/* SE CONECTADO */}
             {isConnected && githubProfile ? (
@@ -624,8 +704,9 @@ export default function DadosEBackup({
             )}
 
           </div>
-
         </div>
+
+      </div>
 
         {/* COLUNA DIREITA: SINCRONIZAR LOCAL & DANGER (5 COLUNAS) */}
         <div className="lg:col-span-5 space-y-6">

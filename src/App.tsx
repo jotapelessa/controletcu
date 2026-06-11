@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { carregarDadosIniciais, salvarMaterias, salvarCiclo, salvarSimulados, salvarRevisoes, salvarHistorico } from './data';
 import { Materia, CicloEstudo, Simulado, RevisaoEspacada, LogSessao, StatusAula, Aula } from './types';
 import DashboardStats from './components/DashboardStats';
@@ -11,6 +11,8 @@ import IADiagnostico from './components/IADiagnostico';
 import DadosEBackup from './components/DadosEBackup';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shield, BookOpen, Clock, Calendar, Award, Sparkles, LogOut, CheckCircle, Flame, User, ListCollapse } from 'lucide-react';
+import { supabase, isSupabaseConfigured } from './lib/supabase';
+import SupabaseAuthModal from './components/SupabaseAuthModal';
 
 export default function App() {
   // Estados Globais da Aplicação
@@ -21,7 +23,17 @@ export default function App() {
   const [historico, setHistorico] = useState<LogSessao[]>([]);
   const [materiaEditalAtivaId, setMateriaEditalAtivaId] = useState<string | undefined>(undefined);
 
-  // Carregar dados no mount
+  // Estados do Supabase Cloud Sync
+  const [userSession, setUserSession] = useState<any>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [lastSyncCloudTime, setLastSyncCloudTime] = useState<string>(() => {
+    return localStorage.getItem('tcu_last_sync_cloud_time') || '';
+  });
+  
+  const skipSyncRef = useRef(true);
+
+  // Carregar dados no mount e gerenciar autenticação
   useEffect(() => {
     const dados = carregarDadosIniciais();
     setMaterias(dados.materias);
@@ -29,7 +41,169 @@ export default function App() {
     setSimulados(dados.simulados);
     setRevisoes(dados.revisoes);
     setHistorico(dados.historico);
+
+    if (isSupabaseConfigured) {
+      // Obter sessão atual
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        setUserSession(session);
+        if (session) {
+          skipSyncRef.current = true;
+          syncDadosFromCloud(session.user.id);
+        }
+      });
+
+      // Ouvir mudanças de autenticação
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        setUserSession(session);
+        if (session) {
+          skipSyncRef.current = true;
+          syncDadosFromCloud(session.user.id);
+        } else {
+          localStorage.removeItem('tcu_last_sync_cloud_time');
+          setLastSyncCloudTime('');
+        }
+      });
+
+      return () => subscription.unsubscribe();
+    }
   }, []);
+
+  // Sincronizar automaticamente com o Supabase quando o estado mudar localmente (debounced)
+  useEffect(() => {
+    if (!userSession || !isSupabaseConfigured) return;
+
+    if (skipSyncRef.current) {
+      skipSyncRef.current = false;
+      return;
+    }
+
+    const delayDebounceFn = setTimeout(() => {
+      sendDadosToCloud(userSession.user.id);
+    }, 1500);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [materias, ciclo, simulados, revisoes, historico, userSession]);
+
+  // Função para enviar os dados atuais ao Supabase
+  const sendDadosToCloud = async (userId: string) => {
+    if (!isSupabaseConfigured) return;
+    try {
+      setIsSyncingCloud(true);
+      const planejamentoSemanalRaw = localStorage.getItem('tcu_planejamento_semanal');
+      const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
+      
+      const payload = {
+        user_id: userId,
+        updated_at: new Date().toISOString(),
+        materias,
+        ciclo,
+        simulados,
+        revisoes,
+        historico,
+        planejamento_semanal: planejamentoSemanal
+      };
+
+      const { error } = await supabase
+        .from('user_data_sync')
+        .upsert(payload, { onConflict: 'user_id' });
+
+      if (error) throw error;
+
+      // Gravar timestamp local
+      const nowRaw = Date.now();
+      localStorage.setItem('tcu_last_sync_time_raw', nowRaw.toString());
+      
+      const nowStr = new Date().toLocaleString('pt-BR');
+      setLastSyncCloudTime(nowStr);
+      localStorage.setItem('tcu_last_sync_cloud_time', nowStr);
+    } catch (err) {
+      console.error('Erro ao enviar dados para o Supabase:', err);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Função para carregar e sincronizar dados da nuvem do Supabase
+  const syncDadosFromCloud = async (userId: string) => {
+    if (!isSupabaseConfigured) return;
+    try {
+      setIsSyncingCloud(true);
+      const { data, error } = await supabase
+        .from('user_data_sync')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') { // PGRST116: Registro não encontrado
+        throw error;
+      }
+
+      if (data) {
+        // Obter timestamps de modificação para saber qual fonte é mais recente
+        const cloudTime = new Date(data.updated_at).getTime();
+        const localTimeStr = localStorage.getItem('tcu_last_sync_time_raw');
+        const localTime = localTimeStr ? parseInt(localTimeStr) : 0;
+
+        if (cloudTime > localTime) {
+          // Nuvem possui dados mais recentes, atualiza o browser
+          setMaterias(data.materias);
+          salvarMaterias(data.materias);
+
+          if (data.ciclo) {
+            setCiclo(data.ciclo);
+            salvarCiclo(data.ciclo);
+          }
+          setSimulados(data.simulados);
+          salvarSimulados(data.simulados);
+
+          setRevisoes(data.revisoes);
+          salvarRevisoes(data.revisoes);
+
+          setHistorico(data.historico);
+          salvarHistorico(data.historico);
+
+          if (data.planejamento_semanal) {
+            localStorage.setItem('tcu_planejamento_semanal', JSON.stringify(data.planejamento_semanal));
+          }
+
+          const nowStr = new Date(data.updated_at).toLocaleString('pt-BR');
+          setLastSyncCloudTime(nowStr);
+          localStorage.setItem('tcu_last_sync_cloud_time', nowStr);
+        } else if (localTime > cloudTime) {
+          // Browser possui alterações mais recentes, faz upload
+          await sendDadosToCloud(userId);
+        } else {
+          // Já estão sincronizados
+          const nowStr = new Date(data.updated_at).toLocaleString('pt-BR');
+          setLastSyncCloudTime(nowStr);
+          localStorage.setItem('tcu_last_sync_cloud_time', nowStr);
+        }
+      } else {
+        // Usuário acabou de logar e não tem dados na nuvem, envia o estado local atual
+        await sendDadosToCloud(userId);
+      }
+    } catch (err) {
+      console.error('Erro ao sincronizar dados da nuvem Supabase:', err);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (!isSupabaseConfigured) return;
+    await supabase.auth.signOut();
+    setUserSession(null);
+    localStorage.removeItem('tcu_last_sync_cloud_time');
+    setLastSyncCloudTime('');
+    
+    // Restaura o estado para os dados locais do localStorage
+    const dados = carregarDadosIniciais();
+    setMaterias(dados.materias);
+    setCiclo(dados.ciclo);
+    setSimulados(dados.simulados);
+    setRevisoes(dados.revisoes);
+    setHistorico(dados.historico);
+  };
 
   // Monitorar abas
   const [abaAtiva, setAbaAtiva] = useState<'painel' | 'ciclo' | 'planejamento' | 'edital' | 'revisoes' | 'simulados' | 'coach' | 'dados'>('painel');
@@ -406,6 +580,12 @@ export default function App() {
                 historico={historico}
                 onImportBackup={handleImportarBackupTotal}
                 onResetGeral={handleResetarGeral}
+                userEmail={userSession?.user?.email}
+                onOpenAuth={() => setShowAuthModal(true)}
+                onLogout={handleLogout}
+                onSyncCloud={() => sendDadosToCloud(userSession?.user?.id)}
+                isSyncingCloud={isSyncingCloud}
+                lastSyncCloudTime={lastSyncCloudTime}
               />
             )}
 
@@ -422,6 +602,21 @@ export default function App() {
         </div>
       </footer>
 
+      {showAuthModal && (
+        <SupabaseAuthModal
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={() => {
+            if (isSupabaseConfigured) {
+              supabase.auth.getSession().then(({ data: { session } }) => {
+                if (session) {
+                  setUserSession(session);
+                  syncDadosFromCloud(session.user.id);
+                }
+              });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
