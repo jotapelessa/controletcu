@@ -51,11 +51,12 @@ export function gerarDadosSimuladosExtrema(): {
   const dataAtual = new Date();
 
   // Tipos de estudo sequenciais para cada aula
-  const tiposEstudo: ('Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão')[] = [
+  const tiposEstudo: ('Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards')[] = [
     'Teoria (PDF)',
     'Vídeo',
     'Questões',
-    'Revisão'
+    'Revisão',
+    'Flashcards'
   ];
 
   // Map para controlar quantas sessões foram feitas em cada aula de cada matéria
@@ -131,7 +132,7 @@ export function gerarDadosSimuladosExtrema(): {
         aula.status = StatusAula.LendoPDF;
       } else if (tipo === 'Vídeo') {
         aula.status = StatusAula.AssistindoVideo;
-      } else if (tipo === 'Revisão') {
+      } else if (tipo === 'Revisão' || tipo === 'Flashcards') {
         aula.status = StatusAula.Revisando;
       }
 
@@ -205,9 +206,9 @@ export function gerarDadosSimuladosExtrema(): {
 
     simulados.push({
       id: `sim_seeder_${i}`,
-      titulo: `Simulado Nacional TCU FGV - Rodada ${i}`,
+      titulo: `Simulado Nacional TCU - Rodada ${i}`,
       data: dataSimulado.toISOString().split('T')[0],
-      banca: 'FGV (Estratégia)',
+      banca: 'Estratégia',
       totalQuestoes,
       questoesAcertadas,
       questoesErradas,

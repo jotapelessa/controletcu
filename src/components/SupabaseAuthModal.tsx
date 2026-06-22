@@ -77,7 +77,7 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
             {isSignUp ? <UserPlus className="text-[#C5A059]" size={22} /> : <LogIn className="text-[#C5A059]" size={22} />}
           </div>
           <h3 className="text-lg font-display font-medium text-white">
-            {isSignUp ? 'Criar Conta de Estudante (TCU)' : 'Acessar Nuvem Supabase'}
+            {isSignUp ? 'Criar Conta de Estudante' : 'Acessar Nuvem Supabase'}
           </h3>
           <p className="text-xs text-[#94A3B8] mt-1 font-sans">
             {isSignUp ? 'Crie seu cadastro para sincronizar seus ciclos de estudos.' : 'Sincronize seu progresso local com todos os seus dispositivos.'}

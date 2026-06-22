@@ -1,6 +1,6 @@
 import { Materia, Aula, StatusAula, CicloEstudo, Simulado, LogSessao, RevisaoEspacada } from './types';
 
-// Dicionário com lista de tópicos ultra-realistas para as 17 matérias da FGV/Estratégia TCU
+// Dicionário com lista de tópicos ultra-realistas para as 17 matérias da Estratégia TCU
 const TOPICOS_REALISTAS: { [sigla: string]: string[] } = {
   CEX: [
     'Entidades Fiscalizadoras Superiores (EFS). Sistemas de Controle na Administração Pública Brasileira. Controle Interno.',
@@ -365,18 +365,20 @@ function gerarAulasParaMateria(sigla: string): Aula[] {
 // 17 MATÉRIAS OFICIAIS
 export const MATERIAS_PADRAO: Materia[] = Object.keys(INFO_MATERIAS_17).map(id => {
   const info = INFO_MATERIAS_17[id];
+  const defaultMeta = ['CEX', 'AFO', 'AUD'].includes(info.sigla) ? 95 : 90;
   return {
     id,
     nome: info.nome,
     sigla: info.sigla,
     cor: info.cor,
-    aulas: gerarAulasParaMateria(info.sigla)
+    aulas: gerarAulasParaMateria(info.sigla),
+    metaAcertos: defaultMeta
   };
 });
 
 // CICLO INTEGRADO PARA AS 17 DISCIPLINAS
 export const CICLO_PADRAO: CicloEstudo = {
-  id: 'ciclo_tcu_completo',
+  id: 'ciclo_superestrategico_completo',
   nome: 'Ciclo Estratégia Completo (17 Disciplinas)',
   itens: Object.keys(INFO_MATERIAS_17).map((id, idx) => ({
     id: `ic_${idx + 1}`,
@@ -391,9 +393,9 @@ export const CICLO_PADRAO: CicloEstudo = {
 export const SIMULADOS_ESTATICOS: Simulado[] = [
   {
     id: 'sim_1',
-    titulo: 'Simulado Nacional TCU - Estilo FGV (Primeiro Diagnóstico)',
+    titulo: 'Simulado Nacional Estratégia (Primeiro Diagnóstico)',
     data: '2026-05-15',
-    banca: 'FGV (Estratégia)',
+    banca: 'Estratégia',
     totalQuestoes: 100,
     questoesAcertadas: 65,
     questoesErradas: 35,
@@ -407,7 +409,7 @@ export const SIMULADOS_ESTATICOS: Simulado[] = [
       'analise_dados_ti': { questoes: 10, acertos: 6, erros: 4 },
       'portugues_redacao': { questoes: 10, acertos: 2, erros: 8 }
     },
-    observacoes: 'Bom desempenho nas básicas de direito, mas contabilidade pública, português da FGV e TI pesaram bastante. Metodologia precisa de ajustes.'
+    observacoes: 'Bom desempenho nas básicas de direito, mas contabilidade pública, português e TI pesaram bastante. Metodologia precisa de ajustes.'
   }
 ];
 
@@ -417,7 +419,7 @@ export const REVISOES_MOCK: RevisaoEspacada[] = [
     id: 'rev_1',
     materiaId: 'controle_externo',
     aulaId: 'CEX_01',
-    titulo: 'Revisão: Jurisdição e Competência do TCU',
+    titulo: 'Revisão: Jurisdição e Competência do Tribunal de Contas',
     dataCriacao: '2026-06-10T10:00:00Z',
     dataRevisaoAlvo: '2026-06-11T10:00:00Z',
     intervaloDias: 1,
@@ -462,18 +464,137 @@ export const HISTORICO_MOCK: LogSessao[] = [
     questoesAcertadas: 15,
     questoesErradas: 5,
     tipo: 'Questões',
-    comentarios: 'Resolução de questões de LDO/LOA da banca FGV.'
+    comentarios: 'Resolução de questões de LDO/LOA.'
   }
 ];
 
+// Função para migrar chaves de localStorage do prefixo legado 'tcu_' para 'superestrategico_'
+function migrateLocalStorageKeys() {
+  try {
+    const keysToMigrate: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('tcu_')) {
+        keysToMigrate.push(key);
+      }
+    }
+    keysToMigrate.forEach(key => {
+      const val = localStorage.getItem(key);
+      if (val !== null) {
+        const newKey = key.replace('tcu_', 'superestrategico_');
+        // Só migra se a chave nova ainda não existir (não sobrescreve dados mais recentes)
+        if (!localStorage.getItem(newKey)) {
+          localStorage.setItem(newKey, val);
+        }
+        localStorage.removeItem(key);
+      }
+    });
+  } catch (e) {
+    console.error("Erro na migração de localStorage keys:", e);
+  }
+}
+
+// Função auxiliar para validar, completar e mesclar as matérias do usuário com as matérias padrão
+export function ajustarEMesclarMaterias(userMaterias: Materia[] | null | undefined): Materia[] {
+  if (!userMaterias || !Array.isArray(userMaterias) || userMaterias.length === 0) {
+    return MATERIAS_PADRAO;
+  }
+  try {
+    return MATERIAS_PADRAO.map(defaultMat => {
+      const userMat = userMaterias.find(m => m.id === defaultMat.id);
+      if (!userMat) {
+        return defaultMat;
+      }
+
+      // Preservando o status de progresso das aulas que o usuário já estudou
+      const aulasConcatenadas = defaultMat.aulas.map(defaultAula => {
+        const userAula = userMat.aulas?.find(a => 
+          a.id === defaultAula.id || 
+          a.numero === defaultAula.numero
+        );
+        return userAula 
+          ? { ...defaultAula, ...userAula, id: defaultAula.id, numero: defaultAula.numero, titulo: defaultAula.titulo } 
+          : defaultAula;
+      });
+
+      return {
+        metaAcertos: defaultMat.metaAcertos,
+        ...userMat,
+        sigla: defaultMat.sigla,
+        nome: defaultMat.nome,
+        cor: defaultMat.cor,
+        aulas: aulasConcatenadas
+      };
+    });
+  } catch (e) {
+    console.error("Erro ao mesclar materias:", e);
+    return MATERIAS_PADRAO;
+  }
+}
+
+// Função auxiliar para validar, readequar e completar o ciclo de estudos do usuário
+export function ajustarEMesclarCiclo(userCiclo: CicloEstudo | null | undefined, materiasAtivas: Materia[]): CicloEstudo {
+  if (!userCiclo || typeof userCiclo !== 'object' || !Array.isArray(userCiclo.itens) || userCiclo.itens.length === 0) {
+    return CICLO_PADRAO;
+  }
+  try {
+    const ciclo = { ...userCiclo };
+    if (typeof ciclo.itemAtualIndice !== 'number') {
+      ciclo.itemAtualIndice = 0;
+    }
+
+    // Filtrar apenas itens com matérias ativas
+    const materiasIdsExistentes = materiasAtivas.map(m => m.id);
+    let validItens = ciclo.itens.filter(it => materiasIdsExistentes.includes(it.materiaId));
+
+    if (validItens.length === 0) {
+      return CICLO_PADRAO;
+    }
+
+    // Reordenar os índices Ordem
+    validItens = validItens.map((it, idx) => ({
+      ...it,
+      Ordem: idx + 1
+    }));
+
+    ciclo.itens = validItens;
+
+    if (ciclo.itemAtualIndice >= ciclo.itens.length) {
+      ciclo.itemAtualIndice = 0;
+    }
+
+    // Enxertar matérias que porventura estejam faltando no ciclo
+    const materiasIdsNoCiclo = ciclo.itens.map(it => it.materiaId);
+    const materiasFaltantes = materiasAtivas.filter(m => !materiasIdsNoCiclo.includes(m.id));
+
+    if (materiasFaltantes.length > 0) {
+      materiasFaltantes.forEach((m, index) => {
+        ciclo.itens.push({
+          id: `ic_new_${index}_${Date.now()}`,
+          materiaId: m.id,
+          tempoMinutos: 90,
+          Ordem: ciclo.itens.length + 1
+        });
+      });
+    }
+    return ciclo;
+  } catch (e) {
+    console.error("Erro ao mesclar ciclo:", e);
+    return CICLO_PADRAO;
+  }
+}
+
 // Carregar dados iniciais mesclando e atualizando para as 17 matérias de forma elegante e persistente
 export function carregarDadosIniciais() {
-  const initialized = localStorage.getItem('tcu_initialized');
-  const materiasRaw = localStorage.getItem('tcu_materias');
-  const cicloRaw = localStorage.getItem('tcu_ciclo');
-  const simuladosRaw = localStorage.getItem('tcu_simulados');
-  const revisoesRaw = localStorage.getItem('tcu_revisoes');
-  const historicoRaw = localStorage.getItem('tcu_historico');
+  // Executar migração antes de carregar
+  migrateLocalStorageKeys();
+
+  const initialized = localStorage.getItem('superestrategico_initialized');
+  const materiasRaw = localStorage.getItem('superestrategico_materias');
+  const cicloRaw = localStorage.getItem('superestrategico_ciclo');
+  const simuladosRaw = localStorage.getItem('superestrategico_simulados');
+  const revisoesRaw = localStorage.getItem('superestrategico_revisoes');
+  const historicoRaw = localStorage.getItem('superestrategico_historico');
 
   const isFirstRun = !initialized;
 
@@ -481,65 +602,17 @@ export function carregarDadosIniciais() {
   if (materiasRaw) {
     try {
       const userMateriasParsed = JSON.parse(materiasRaw) as Materia[];
-      
-      // Upgrade inteligente das matérias do usuário
-      // 1. Garante que todas as 17 materias de MATERIAS_PADRAO existem no array do usuário
-      materias = MATERIAS_PADRAO.map(defaultMat => {
-        const userMat = userMateriasParsed.find(m => m.id === defaultMat.id);
-        if (!userMat) {
-          // Se o usuário não tem essa matéria (p. ex. Estatística ou Direito Civil novo), traz ela inteira do padrão
-          return defaultMat;
-        }
-
-        // Se o usuário tem essa matéria, vamos garantir que ela tenha TODAS as aulas corretas.
-        // Preservando o status de progresso das aulas que o usuário já estudou.
-        const aulasConcatenadas = defaultMat.aulas.map(defaultAula => {
-          // Busca exata pelo id ou número da aula para preservar o progresso (questoes, status, horas)
-          const userAula = userMat.aulas.find(a => 
-            a.id === defaultAula.id || 
-            a.numero === defaultAula.numero
-          );
-          // O titulo oficial do defaultAula SEMPRE prevalece sobre o do userAula para corrigir bugs antigos
-          return userAula ? { ...defaultAula, ...userAula, id: defaultAula.id, numero: defaultAula.numero, titulo: defaultAula.titulo } : defaultAula;
-        });
-
-        return {
-          ...userMat,
-          sigla: defaultMat.sigla,
-          nome: defaultMat.nome,
-          cor: defaultMat.cor,
-          aulas: aulasConcatenadas
-        };
-      });
-
+      materias = ajustarEMesclarMaterias(userMateriasParsed);
     } catch (e) {
       materias = MATERIAS_PADRAO;
     }
   }
 
-  // Garantir ciclo atualizado com as matérias novas
   let ciclo: CicloEstudo = CICLO_PADRAO;
   if (cicloRaw) {
     try {
       const userCicloParsed = JSON.parse(cicloRaw) as CicloEstudo;
-      // Garante que o ciclo tenha os itens correspondentes às matérias ativas
-      ciclo = userCicloParsed;
-      
-      // Se houver discrepância no tamanho ou matérias antigas, readequar
-      const materiasIdsNoCiclo = ciclo.itens.map(it => it.materiaId);
-      const materiasFaltantes = materias.filter(m => !materiasIdsNoCiclo.includes(m.id));
-
-      if (materiasFaltantes.length > 0) {
-        // Enxertar as novas matérias no ciclo atual do usuário
-        materiasFaltantes.forEach((m, index) => {
-          ciclo.itens.push({
-            id: `ic_new_${index}`,
-            materiaId: m.id,
-            tempoMinutos: 90,
-            Ordem: ciclo.itens.length + 1
-          });
-        });
-      }
+      ciclo = ajustarEMesclarCiclo(userCicloParsed, materias);
     } catch (e) {
       ciclo = CICLO_PADRAO;
     }
@@ -584,7 +657,7 @@ export function carregarDadosIniciais() {
   salvarMaterias(dados.materias);
   salvarCiclo(dados.ciclo);
   try {
-    localStorage.setItem('tcu_initialized', 'true');
+    localStorage.setItem('superestrategico_initialized', 'true');
   } catch (e) {
     console.error("Erro ao salvar initialized no localStorage:", e);
   }
@@ -597,7 +670,7 @@ export function carregarDadosIniciais() {
 
 export function salvarMaterias(materias: Materia[]) {
   try {
-    localStorage.setItem('tcu_materias', JSON.stringify(materias));
+    localStorage.setItem('superestrategico_materias', JSON.stringify(materias));
   } catch (e) {
     console.error("Erro ao salvar materias no localStorage:", e);
   }
@@ -605,7 +678,7 @@ export function salvarMaterias(materias: Materia[]) {
 
 export function salvarCiclo(ciclo: CicloEstudo) {
   try {
-    localStorage.setItem('tcu_ciclo', JSON.stringify(ciclo));
+    localStorage.setItem('superestrategico_ciclo', JSON.stringify(ciclo));
   } catch (e) {
     console.error("Erro ao salvar ciclo no localStorage:", e);
   }
@@ -613,7 +686,7 @@ export function salvarCiclo(ciclo: CicloEstudo) {
 
 export function salvarSimulados(simulados: Simulado[]) {
   try {
-    localStorage.setItem('tcu_simulados', JSON.stringify(simulados));
+    localStorage.setItem('superestrategico_simulados', JSON.stringify(simulados));
   } catch (e) {
     console.error("Erro ao salvar simulados no localStorage:", e);
   }
@@ -621,7 +694,7 @@ export function salvarSimulados(simulados: Simulado[]) {
 
 export function salvarRevisoes(revisoes: RevisaoEspacada[]) {
   try {
-    localStorage.setItem('tcu_revisoes', JSON.stringify(revisoes));
+    localStorage.setItem('superestrategico_revisoes', JSON.stringify(revisoes));
   } catch (e) {
     console.error("Erro ao salvar revisoes no localStorage:", e);
   }
@@ -629,7 +702,7 @@ export function salvarRevisoes(revisoes: RevisaoEspacada[]) {
 
 export function salvarHistorico(historico: LogSessao[]) {
   try {
-    localStorage.setItem('tcu_historico', JSON.stringify(historico));
+    localStorage.setItem('superestrategico_historico', JSON.stringify(historico));
   } catch (e) {
     console.error("Erro ao salvar historico no localStorage:", e);
   }

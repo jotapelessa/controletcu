@@ -24,6 +24,7 @@ export interface Materia {
   sigla: string; // e.g., "CEX"
   aulas: Aula[];
   cor: string; // tailwind color class e.g. "blue", "indigo"
+  metaAcertos?: number; // target percentage e.g., 90
 }
 
 export interface ItemCiclo {
@@ -83,7 +84,7 @@ export interface LogSessao {
   questoesResolvidas: number;
   questoesAcertadas: number;
   questoesErradas: number;
-  tipo: 'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão';
+  tipo: 'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards';
   comentarios?: string;
 }
 

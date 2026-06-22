@@ -15,7 +15,7 @@ export default function SimuladosBanca({ materias, simulados, onSalvarSimulados 
   // Form States
   const [titulo, setTitulo] = useState('');
   const [data, setData] = useState(new Date().toISOString().split('T')[0]);
-  const [banca, setBanca] = useState('FGV (Estratégia)');
+  const [banca, setBanca] = useState('Estratégia');
   const [observacoes, setObservacoes] = useState('');
 
   // Performance por matéria - Dicionário local
@@ -112,7 +112,7 @@ export default function SimuladosBanca({ materias, simulados, onSalvarSimulados 
         <div>
           <h3 className="text-base font-display font-medium text-white flex items-center gap-2">
             <Award size={18} className="text-[#C5A059]" />
-            Controle de Simulados de Auditoria (FGV)
+            Controle de Simulados de Auditoria
           </h3>
           <p className="text-xs text-[#94A3B8] mt-0.5">Lance o espelho de notas do Estratégia e trackeie seu percentual de corte real.</p>
         </div>
@@ -383,7 +383,7 @@ export default function SimuladosBanca({ materias, simulados, onSalvarSimulados 
           <div className="bg-[#0F172A] border border-[#1E293B] rounded p-10 text-center text-[#64748B]" id="no-simulated-records">
             <Award size={32} className="text-[#1E293B] mx-auto mb-2" />
             <p className="font-semibold text-white">Nenhum simulado registrado no histórico.</p>
-            <p className="text-xs text-[#94A3B8]">Clique em "Registrar Gabarito" acima para lançar suas métricas de simulados TCU/FGV.</p>
+            <p className="text-xs text-[#94A3B8]">Clique em "Registrar Gabarito" acima para lançar suas métricas de simulados.</p>
           </div>
         )}
       </div>

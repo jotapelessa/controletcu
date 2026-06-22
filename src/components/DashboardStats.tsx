@@ -31,7 +31,7 @@ interface StatsProps {
 export default function DashboardStats({ materias, historico, onSelectMateria }: StatsProps) {
   // --- 1. ESTADOS DO TIMER DA PROVA & PROJEÇÃO ---
   const [dataProva, setDataProva] = useState<string>(() => {
-    return localStorage.getItem('tcu_data_prova') || '2026-10-18T13:00:00';
+    return localStorage.getItem('superestrategico_data_prova') || '2026-10-18T13:00:00';
   });
   const [showEditDate, setShowEditDate] = useState(false);
   const [tempDate, setTempDate] = useState(dataProva.split('T')[0]);
@@ -39,7 +39,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
   
   // Meta de aulas concluídas por semana para simulação (padrão: 6 aulas)
   const [metaAulasSemana, setMetaAulasSemana] = useState<number>(() => {
-    const saved = localStorage.getItem('tcu_meta_aulas_semana');
+    const saved = localStorage.getItem('superestrategico_meta_aulas_semana');
     return saved ? parseInt(saved) : 6;
   });
 
@@ -77,13 +77,13 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
   const handleSalvarNovaData = () => {
     const novaDataComHora = `${tempDate}T13:00:00`;
     setDataProva(novaDataComHora);
-    localStorage.setItem('tcu_data_prova', novaDataComHora);
+    localStorage.setItem('superestrategico_data_prova', novaDataComHora);
     setShowEditDate(false);
   };
 
   const handleSalvarMetaAulas = (val: number) => {
     setMetaAulasSemana(val);
-    localStorage.setItem('tcu_meta_aulas_semana', val.toString());
+    localStorage.setItem('superestrategico_meta_aulas_semana', val.toString());
   };
 
   // --- 2. CÁLCULO DE ESTATÍSTICAS GERAIS ---
@@ -129,6 +129,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
       erros: Math.max(erros, mErrHist),
       aulasQuantidade: m.aulas.length,
       aulasConcluidas: m.aulas.filter(a => a.status === 'Concluído').length,
+      metaAcertos: m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90),
       // Contagem de ciclos da matéria (mínimo de estudos/revisões entre todas as aulas)
       ciclosContagem: m.aulas.length > 0
         ? Math.min(...m.aulas.map(aula => histMateria.filter(h => h.aulaId === aula.id).length))
@@ -524,7 +525,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
                       </div>
                       <div>
                         <span className="text-[#64748B] block text-[9px] uppercase tracking-wider">Precisão</span>
-                        <span className={`font-bold ${mPerc >= 80 ? 'text-emerald-400' : 'text-amber-500'}`}>
+                        <span className={`font-bold ${mPerc >= m.metaAcertos ? 'text-emerald-400' : 'text-amber-500'}`}>
                           {m.questoes > 0 ? `${mPerc}%` : '-'}
                         </span>
                       </div>
@@ -532,7 +533,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
 
                     {/* Ciclos por Aula */}
                     <div className="mb-4">
-                      <h5 className="text-[9px] font-mono font-bold text-[#64748B] mb-2 uppercase tracking-wide">Ciclos por Aula:</h5>
+                      <h5 className="text-[9px] font-mono font-bold text-[#64748B] mb-2 uppercase tracking-wide">Aproveitamento e Foco por Aula:</h5>
                       <div className="flex flex-wrap gap-1.5 max-h-[80px] overflow-y-auto pr-1 no-scrollbar">
                         {m.aulasQuantidade > 0 ? (
                           // Find default material corresponding to this performance subject to map over its actual structure
@@ -540,13 +541,30 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
                             const fullMateria = materias.find(x => x.id === m.id);
                             return (fullMateria?.aulas || []).map(aula => {
                               const contagemAula = logsMateria.filter(l => l.aulaId === aula.id).length;
+                              const qResolv = aula.questoesResolvidas || 0;
+                              const qAcert = aula.questoesAcertadas || 0;
+                              const qPct = qResolv > 0 ? Math.round((qAcert / qResolv) * 100) : 0;
+                              
+                              let performanceColor = 'text-[#64748B] border-[#1E293B] bg-[#0C0E12]';
+                              if (qResolv > 0) {
+                                if (qPct >= m.metaAcertos) {
+                                  performanceColor = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-bold';
+                                } else if (qPct >= 80) {
+                                  performanceColor = 'bg-[#C5A059]/10 border-[#C5A059]/30 text-[#C5A059] font-bold';
+                                } else {
+                                  performanceColor = 'bg-rose-500/10 border-rose-500/30 text-rose-400 font-bold';
+                                }
+                              } else if (contagemAula > 0) {
+                                  performanceColor = 'bg-[#1E293B]/40 border-[#2D3748] text-slate-300';
+                              }
+
                               return (
                                 <span 
                                   key={aula.id} 
-                                  className={`text-[9px] font-mono px-2 py-0.5 rounded border transition-all ${contagemAula > 0 ? 'bg-[#C5A059]/10 border-[#C5A059]/30 text-[#C5A059]' : 'bg-[#0C0E12] border-[#1E293B] text-[#64748B]'}`}
-                                  title={`${aula.titulo}: ${contagemAula} vezes estudada`}
+                                  className={`text-[9px] font-mono px-2 py-0.5 rounded border transition-all ${performanceColor}`}
+                                  title={`${aula.titulo}: ${contagemAula}x estudada | ${qResolv} Q (${qPct}% acertos)`}
                                 >
-                                  A{aula.numero.toString().padStart(2, '0')}: {contagemAula}x
+                                  A{aula.numero.toString().padStart(2, '0')}: {qResolv > 0 ? `${qPct}% (${qResolv}Q)` : `${contagemAula}x`}
                                 </span>
                               );
                             });
@@ -629,6 +647,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
                   <option value="Vídeo">Vídeo</option>
                   <option value="Questões">Questões</option>
                   <option value="Revisão">Revisão</option>
+                  <option value="Flashcards">Flashcards</option>
                 </select>
               </div>
             </div>
@@ -647,7 +666,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
                         <th className="py-3 px-4">Matéria</th>
                         <th className="py-3 px-4">Recurso/Tipo</th>
                         <th className="py-3 px-4 text-center">Duração</th>
-                        <th className="py-3 px-4 text-center">Questões (FGV)</th>
+                        <th className="py-3 px-4 text-center">Questões</th>
                         <th className="py-3 px-4">Comentários anotados</th>
                       </tr>
                     </thead>
@@ -710,12 +729,12 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <span className="text-[10px] bg-[#C5A059]/20 text-[#C5A059] border border-[#C5A059]/40 px-2.5 py-0.5 rounded font-mono font-bold tracking-widest uppercase">
-              PLANO DE ESTUDOS AUDITOR TCU
+              PLANO DE ESTUDOS - SUPERESTRATEGICO
             </span>
           </div>
           <h2 className="text-xl font-display font-medium text-white tracking-tight mt-1">Bem-vindo ao seu Cockpit de Alta Performance</h2>
           <p className="text-xs text-[#64748B] leading-relaxed">
-            Seu progresso é consolidado com base na bibliografia do Estratégia e critérios da banca FGV.
+            Seu progresso é consolidado com base na bibliografia do Estratégia e critérios da banca do concurso.
           </p>
         </div>
 
@@ -804,9 +823,14 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Desempenho de Questões</p>
             <h3 className="text-3xl font-display font-bold text-[#C5A059] mt-1">{totalQuestoes}</h3>
-            <span className="text-[10px] text-[#94A3B8] flex items-center gap-1 font-mono mt-1">
-              <ThumbsUp size={10} className="text-emerald-500" /> {totalAcertos} acertos | {totalErros} erros
-            </span>
+            <div className="text-[10px] text-[#94A3B8] flex flex-col font-mono mt-1 space-y-0.5">
+              <span className="flex items-center gap-1">
+                <ThumbsUp size={10} className="text-emerald-500" /> {totalAcertos} ac | {totalErros} er (Geral)
+              </span>
+              <span className="text-[10px] text-[#C5A059] font-bold">
+                Hoje: {questoesHoje} Q ({acertosHoje} ac | {questoesHoje - acertosHoje} er)
+              </span>
+            </div>
           </div>
         </div>
 
@@ -818,8 +842,8 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
           <div className="flex-1">
             <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Média Geral Acertos</p>
             <h3 className="text-3xl font-display font-bold text-[#C5A059] mt-1">{percentualGeralAcertos}%</h3>
-            <span className={`text-[10px] font-bold uppercase tracking-wider ${percentualGeralAcertos >= 80 ? 'text-emerald-400' : 'text-amber-500'}`}>
-              {percentualGeralAcertos >= 80 ? '🎯 Meta TCU Atingida' : '⚠️ Meta TCU: > 80%'}
+            <span className={`text-[10px] font-bold uppercase tracking-wider ${percentualGeralAcertos >= 90 ? 'text-emerald-400' : 'text-amber-500'}`}>
+              {percentualGeralAcertos >= 90 ? '🎯 Meta Atingida' : '⚠️ Meta: >= 90%'}
             </span>
           </div>
         </div>
@@ -1030,7 +1054,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
             <CheckCircle size={16} className="text-[#C5A059]" />
             Progresso por Matéria
           </h4>
-          <div className="space-y-4 flex-1 overflow-y-auto max-h-[420px] pr-1" id="materia-progress-list">
+          <div className="space-y-4 flex-1" id="materia-progress-list">
             {materiasPerformance.map(m => {
               const percMateria = m.aulasQuantidade > 0 
                 ? Math.round((m.aulasConcluidas / m.aulasQuantidade) * 100) 
@@ -1070,7 +1094,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
         <div className="bg-[#0F172A] border border-[#1E293B] rounded p-6 shadow-sm lg:col-span-2" id="materia-accuracy-panel">
           <h4 className="text-sm font-display font-bold uppercase tracking-widest text-[#E2E8F0] mb-5 border-b border-[#1E293B] pb-3 flex items-center gap-2">
             <Percent size={16} className="text-[#C5A059]" />
-            Índice de Acertos e Erros por Disciplina (FGV/TCU Target)
+            Índice de Acertos e Erros por Disciplina (TCU Target)
           </h4>
           <div className="overflow-x-auto" id="accuracy-table-container">
             <table className="min-w-full text-[#E2E8F0] text-xs sm:text-sm">
@@ -1123,7 +1147,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
           <div className="bg-[#0C0E12] border border-[#1E293B] p-4 rounded mt-4 text-[11px] text-[#94A3B8] leading-relaxed flex items-start gap-2.5">
             <AlertTriangle size={15} className="text-[#C5A059] shrink-0 mt-0.5" />
             <p>
-              <strong>Critério TCU/FGV de Desempenho</strong>: Devido ao nível extremo do concurso e rigor da banca FGV, o índice mínimo recomendado para aprovação é de <strong className="text-white">80% de acertos</strong> nas matérias básicas e de <strong className="text-white">85%</strong> no bloco de Auditoria, Controle Externo (CEX) e AFO. Matérias marcadas com <span className="text-rose-400 font-bold">Atenção</span> devem ser repensadas no ciclo de revisão ativa e diagnósticos da IA.
+              <strong>Critério TCU de Desempenho</strong>: Devido ao nível extremo do concurso e rigor da banca do concurso, o índice mínimo recomendado para aprovação é de <strong className="text-white">90% de acertos</strong> nas matérias básicas e de <strong className="text-white">95%</strong> no bloco de Auditoria, Controle Externo (CEX) e AFO (ou conforme configurado no Painel de Metas). Matérias marcadas com <span className="text-rose-400 font-bold">Atenção</span> devem ser repensadas no ciclo de revisão ativa e diagnósticos da IA.
             </p>
           </div>
         </div>

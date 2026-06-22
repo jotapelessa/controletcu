@@ -16,7 +16,9 @@ import {
   AlertCircle,
   Database,
   Info,
-  Sparkles
+  Sparkles,
+  Sliders,
+  Check
 } from 'lucide-react';
 import { gerarDadosSimuladosExtrema } from '../utils/seeder';
 
@@ -30,6 +32,7 @@ interface AppBackup {
   revisoes: RevisaoEspacada[];
   historico: LogSessao[];
   planejamentoSemanal?: any;
+  configuracoes?: any;
 }
 
 interface DadosEBackupProps {
@@ -40,12 +43,16 @@ interface DadosEBackupProps {
   historico: LogSessao[];
   onImportBackup: (backup: AppBackup) => void;
   onResetGeral: (confirmar?: boolean) => void;
+  onResetDadosEstudo: () => Promise<void>;
+  onResetConfiguracoes: () => void;
+  onSalvarMaterias: (materias: Materia[]) => void;
   userEmail?: string;
   onOpenAuth: () => void;
   onLogout: () => void;
   onSyncCloud: () => Promise<void>;
   isSyncingCloud?: boolean;
   lastSyncCloudTime?: string;
+  isLoggedIn?: boolean;
 }
 
 interface GitHubProfile {
@@ -63,16 +70,20 @@ export default function DadosEBackup({
   historico,
   onImportBackup,
   onResetGeral,
+  onResetDadosEstudo,
+  onResetConfiguracoes,
+  onSalvarMaterias,
   userEmail,
   onOpenAuth,
   onLogout,
   onSyncCloud,
   isSyncingCloud = false,
-  lastSyncCloudTime
+  lastSyncCloudTime,
+  isLoggedIn = false
 }: DadosEBackupProps) {
   // Local Stats & General State
   const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
-    return localStorage.getItem('tcu_last_sync_time') || new Date().toLocaleString('pt-BR');
+    return localStorage.getItem('superestrategico_last_sync_time') || new Date().toLocaleString('pt-BR');
   });
   const [successMsg, setSuccessMsg] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -85,19 +96,100 @@ export default function DadosEBackup({
 
   // GitHub Integration States
   const [githubToken, setGithubToken] = useState<string>(() => {
-    return localStorage.getItem('tcu_github_token') || '';
+    return localStorage.getItem('superestrategico_github_token') || '';
   });
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [githubProfile, setGithubProfile] = useState<GitHubProfile | null>(null);
   const [gistId, setGistId] = useState<string>(() => {
-    return localStorage.getItem('tcu_github_gist_id') || '';
+    return localStorage.getItem('superestrategico_github_gist_id') || '';
   });
   const [isBackingUpGitHub, setIsBackingUpGitHub] = useState<boolean>(false);
   const [isRestoringGitHub, setIsRestoringGitHub] = useState<boolean>(false);
 
   // Safety Confirmation for Reset
   const [resetConfirmInput, setResetConfirmInput] = useState<string>('');
+  const [resetEstudoInput, setResetEstudoInput] = useState<string>('');
+  const [resetConfigInput, setResetConfigInput] = useState<string>('');
+  const [isResettingEstudo, setIsResettingEstudo] = useState(false);
+  const [configResetSuccess, setConfigResetSuccess] = useState(false);
+
+  // Gemini API Key Personal States
+  const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
+    return localStorage.getItem('superestrategico_user_gemini_api_key') || '';
+  });
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [testMessage, setTestMessage] = useState<string>('');
+
+  const handleSalvarGeminiKey = () => {
+    localStorage.setItem('superestrategico_user_gemini_api_key', geminiApiKey.trim());
+    setSuccessMsg('🗝️ Chave de API do Gemini salva com sucesso localmente!');
+    setTimeout(() => setSuccessMsg(''), 5000);
+  };
+
+  const handleRemoverGeminiKey = () => {
+    localStorage.removeItem('superestrategico_user_gemini_api_key');
+    setGeminiApiKey('');
+    setTestStatus('idle');
+    setTestMessage('');
+    setSuccessMsg('🗑️ Chave de API do Gemini removida com sucesso!');
+    setTimeout(() => setSuccessMsg(''), 5000);
+  };
+
+  const handleTestarGeminiConexao = async () => {
+    if (!geminiApiKey.trim()) {
+      setTestStatus('error');
+      setTestMessage('Por favor, insira uma chave de API para testar.');
+      return;
+    }
+    setTestStatus('testing');
+    setTestMessage('Iniciando comunicação com o Google AI Studio...');
+    
+    try {
+      let model = 'gemini-3.5-flash';
+      let response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey.trim()}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'Diga "Ok" se estiver funcionando.' }] }]
+        })
+      });
+      
+      let data = await response.json();
+      
+      // Se der erro de sobrecarga ou cota do modelo (429/503 ou mensagem de overload), tenta o fallback para gemini-3.5-flash
+      if (!response.ok && (response.status === 429 || response.status === 503 || data.error?.message?.toLowerCase().includes('demand') || data.error?.message?.toLowerCase().includes('overload'))) {
+        model = 'gemini-pro-latest';
+        setTestMessage(`gemini ocupado. Tentando fallback para ${model}...`);
+        
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey.trim()}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'Diga "Ok" se estiver funcionando.' }] }]
+          })
+        });
+        
+        data = await response.json();
+      }
+      
+      if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+        setTestStatus('success');
+        setTestMessage(`Conexão ativa! O Gemini (${model}) respondeu com sucesso.`);
+      } else {
+        const errorMsg = data.error?.message || 'Erro desconhecido retornado pela API do Gemini.';
+        setTestStatus('error');
+        setTestMessage(`Falha: ${errorMsg}`);
+      }
+    } catch (e: any) {
+      setTestStatus('error');
+      setTestMessage(`Erro de rede: ${e.message || e}`);
+    }
+  };
 
   // Auto-connect with GitHub if token is already saved
   useEffect(() => {
@@ -114,14 +206,14 @@ export default function DadosEBackup({
 
     setTimeout(() => {
       // Force saving to localstorage (redundant but gives the user great peace of mind)
-      localStorage.setItem('tcu_materias', JSON.stringify(materias));
-      if (ciclo) localStorage.setItem('tcu_ciclo', JSON.stringify(ciclo));
-      localStorage.setItem('tcu_simulados', JSON.stringify(simulados));
-      localStorage.setItem('tcu_revisoes', JSON.stringify(revisoes));
-      localStorage.setItem('tcu_historico', JSON.stringify(historico));
+      localStorage.setItem('superestrategico_materias', JSON.stringify(materias));
+      if (ciclo) localStorage.setItem('superestrategico_ciclo', JSON.stringify(ciclo));
+      localStorage.setItem('superestrategico_simulados', JSON.stringify(simulados));
+      localStorage.setItem('superestrategico_revisoes', JSON.stringify(revisoes));
+      localStorage.setItem('superestrategico_historico', JSON.stringify(historico));
 
       const now = new Date().toLocaleString('pt-BR');
-      localStorage.setItem('tcu_last_sync_time', now);
+      localStorage.setItem('superestrategico_last_sync_time', now);
       setLastSyncTime(now);
 
       setIsSyncingLocal(false);
@@ -132,7 +224,7 @@ export default function DadosEBackup({
 
   // 2. HELPERS TO GENERATE CURRENT STATE DATA AS BACKUP SCHEMA
   const obterDadosBackupLayout = (): AppBackup => {
-    const planejamentoSemanalRaw = localStorage.getItem('tcu_planejamento_semanal');
+    const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
     let planejamentoSemanal = null;
     if (planejamentoSemanalRaw) {
       try {
@@ -142,6 +234,30 @@ export default function DadosEBackup({
       }
     }
 
+    const getLocalStorageItemJson = (key: string) => {
+      const item = localStorage.getItem(key);
+      if (!item) return null;
+      try {
+        return JSON.parse(item);
+      } catch {
+        return item;
+      }
+    };
+
+    const configuracoes = {
+      timer_segundos: parseInt(localStorage.getItem('superestrategico_timer_segundos') || '0', 10),
+      timer_modo_regressivo: localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true',
+      timer_hora_inicio: localStorage.getItem('superestrategico_timer_hora_inicio'),
+      timer_hora_fim: localStorage.getItem('superestrategico_timer_hora_fim'),
+      timer_correct_list: getLocalStorageItemJson('superestrategico_timer_correct_list') || [],
+      timer_wrong_list: getLocalStorageItemJson('superestrategico_timer_wrong_list') || [],
+      timer_limite_questoes: parseInt(localStorage.getItem('superestrategico_timer_limite_questoes') || '50', 10),
+      timer_modal_open: localStorage.getItem('superestrategico_timer_modal_open') === 'true',
+      ia_diagnostico_recente: localStorage.getItem('superestrategico_ia_diagnostico_recente'),
+      github_token: localStorage.getItem('superestrategico_github_token') || '',
+      github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || ''
+    };
+
     return {
       version: "1.2.0",
       timestamp: new Date().toISOString(),
@@ -150,7 +266,8 @@ export default function DadosEBackup({
       simulados,
       revisoes,
       historico,
-      planejamentoSemanal
+      planejamentoSemanal,
+      configuracoes
     };
   };
 
@@ -164,7 +281,7 @@ export default function DadosEBackup({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `tcu_auditor_backup_${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `superestrategico_auditor_backup_${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -259,7 +376,7 @@ export default function DadosEBackup({
         html_url: userData.html_url
       });
       setIsConnected(true);
-      localStorage.setItem('tcu_github_token', tokenToCheck);
+      localStorage.setItem('superestrategico_github_token', tokenToCheck);
       setGithubToken(tokenToCheck);
 
       if (!isAuto) {
@@ -273,7 +390,7 @@ export default function DadosEBackup({
       setGithubProfile(null);
       // Clean token only if we got an authentication failure during active clicking
       if (!isAuto) {
-        localStorage.removeItem('tcu_github_token');
+        localStorage.removeItem('superestrategico_github_token');
       }
     } finally {
       setIsConnecting(false);
@@ -281,8 +398,8 @@ export default function DadosEBackup({
   };
 
   const handleDesconectarGitHub = () => {
-    localStorage.removeItem('tcu_github_token');
-    localStorage.removeItem('tcu_github_gist_id');
+    localStorage.removeItem('superestrategico_github_token');
+    localStorage.removeItem('superestrategico_github_gist_id');
     setGithubToken('');
     setIsConnected(false);
     setGithubProfile(null);
@@ -320,10 +437,10 @@ export default function DadosEBackup({
       }
 
       const gistData = await response.json();
-      const backupFile = gistData.files['tcu_auditor_backup.json'];
+      const backupFile = gistData.files['superestrategico_auditor_backup.json'];
 
       if (!backupFile || !backupFile.content) {
-        throw new Error('O backup selecionado não contém o arquivo "tcu_auditor_backup.json" esperado.');
+        throw new Error('O backup selecionado não contém o arquivo "superestrategico_auditor_backup.json" esperado.');
       }
 
       const parsedBackup = JSON.parse(backupFile.content) as AppBackup;
@@ -361,7 +478,7 @@ export default function DadosEBackup({
         description: "TCU Auditor Planner - Backup de Estudos Científicos",
         public: false, // Ensure backup is secret by default
         files: {
-          "tcu_auditor_backup.json": {
+          "superestrategico_auditor_backup.json": {
             "content": backupString
           }
         }
@@ -391,7 +508,7 @@ export default function DadosEBackup({
         if (method === 'PATCH' && response.status === 404) {
           console.log("Saving gist failed (404), trying to recreate...");
           setGistId('');
-          localStorage.removeItem('tcu_github_gist_id');
+          localStorage.removeItem('superestrategico_github_gist_id');
           // Re-triggering as POST
           const retryResponse = await fetch('https://api.github.com/gists', {
             method: 'POST',
@@ -407,7 +524,7 @@ export default function DadosEBackup({
           }
           const retryGistData = await retryResponse.json();
           setGistId(retryGistData.id);
-          localStorage.setItem('tcu_github_gist_id', retryGistData.id);
+          localStorage.setItem('superestrategico_github_gist_id', retryGistData.id);
           setSuccessMsg('🛰️ Backup e Gist recriados e sincronizados com sucesso no GitHub!');
           setTimeout(() => setSuccessMsg(''), 5000);
           return;
@@ -418,7 +535,7 @@ export default function DadosEBackup({
       const gistData = await response.json();
       if (!gistId) {
         setGistId(gistData.id);
-        localStorage.setItem('tcu_github_gist_id', gistData.id);
+        localStorage.setItem('superestrategico_github_gist_id', gistData.id);
       }
 
       setSuccessMsg('✅ Backup enviado e guardado com sucesso no seu GitHub privado!');
@@ -431,14 +548,28 @@ export default function DadosEBackup({
     }
   };
 
-  // 6. CLEAR AND REINITIALIZE (Danger zone)
+  // 6. RESET HANDLERS
   const handleConfirmarResetCompleto = () => {
     if (resetConfirmInput.trim().toUpperCase() !== 'RESETAR') {
       alert('Por favor, digite a palavra "RESETAR" corretamente para prosseguir.');
       return;
     }
-
     onResetGeral(false);
+  };
+
+  const handleConfirmarResetEstudo = async () => {
+    if (resetEstudoInput.trim().toUpperCase() !== 'ESTUDOS') return;
+    setIsResettingEstudo(true);
+    await onResetDadosEstudo();
+    setIsResettingEstudo(false);
+  };
+
+  const handleConfirmarResetConfig = () => {
+    if (resetConfigInput.trim().toUpperCase() !== 'CONFIG') return;
+    onResetConfiguracoes();
+    setResetConfigInput('');
+    setConfigResetSuccess(true);
+    setTimeout(() => setConfigResetSuccess(false), 4000);
   };
 
   const handleCarregarSimulacaoIA = () => {
@@ -557,6 +688,38 @@ export default function DadosEBackup({
                     <RefreshCw size={13} className={isSyncingCloud ? "animate-spin" : ""} />
                     {isSyncingCloud ? 'Sincronizando...' : 'Forçar Sincronismo na Nuvem'}
                   </button>
+
+                  {/* Checklist de sincronização */}
+                  <div className="pt-3.5 border-t border-[#1E293B]/60 space-y-2">
+                    <span className="text-[10px] font-mono text-[#64748B] uppercase tracking-wider block">Itens Sincronizados</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-[11px] font-mono">
+                      {[
+                        { label: 'Configurações', key: 'configuracoes' },
+                        { label: 'Progresso do Edital', key: 'materias' },
+                        { label: 'Ciclo de Estudos', key: 'ciclo' },
+                        { label: 'Planejamento Semanal', key: 'planejamento' },
+                        { label: 'Simulados', key: 'simulados' },
+                        { label: 'Revisões Espaçadas', key: 'revisoes' },
+                        { label: 'Histórico de Foco', key: 'historico' }
+                      ].map((item, idx) => {
+                        const isSynced = Boolean(lastSyncCloudTime);
+                        return (
+                          <div key={idx} className="flex items-center gap-2 text-[#94A3B8]">
+                            {isSyncingCloud ? (
+                              <RefreshCw size={11} className="text-[#C5A059] animate-spin shrink-0" />
+                            ) : isSynced ? (
+                              <Check size={11} className="text-emerald-400 shrink-0" />
+                            ) : (
+                              <div className="w-1.5 h-1.5 rounded-full bg-[#1E293B] shrink-0" />
+                            )}
+                            <span className={isSyncingCloud ? "animate-pulse" : isSynced ? "text-[#E2E8F0]" : ""}>
+                              {item.label}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-4.5 text-center space-y-3.5">
@@ -731,8 +894,88 @@ export default function DadosEBackup({
 
               </div>
             )}
-
           </div>
+
+          {/* CARD 3: CONFIGURAÇÃO DE METAS DE ACERTOS POR MATÉRIA */}
+          <div className="bg-[#0F172A] border border-[#1E293B] rounded flex flex-col overflow-hidden">
+            <div className="border-b border-[#1E293B] bg-[#0F172A]/80 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sliders size={18} className="text-[#C5A059]" />
+                <h3 className="text-sm font-display font-medium text-white tracking-widest uppercase">Metas de Acertos por Disciplina</h3>
+              </div>
+              <span className="text-[9px] font-mono bg-[#C5A059]/10 text-[#C5A059] border border-[#C5A059]/20 px-2 py-0.5 rounded uppercase">
+                Metas Individuais
+              </span>
+            </div>
+
+            <div className="p-5 flex-1 space-y-4">
+              <p className="text-xs text-[#94A3B8] leading-relaxed">
+                Configure metas de assertividade específicas para cada disciplina. O IA Tutor Coach e os alertas do dashboard utilizarão essas metas para analisar seu rendimento crítico.
+              </p>
+
+              {/* Ações Rápidas */}
+              <div className="grid grid-cols-2 gap-3 pb-2">
+                <button
+                  onClick={() => {
+                    const novasMaterias = materias.map(m => ({ ...m, metaAcertos: 90 }));
+                    onSalvarMaterias(novasMaterias);
+                  }}
+                  className="px-3 py-2 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#C5A059] border border-[#C5A059]/30 rounded text-center text-xs font-bold transition-all cursor-pointer"
+                >
+                  Definir Todas para 90%
+                </button>
+                <button
+                  onClick={() => {
+                    const novasMaterias = materias.map(m => ({
+                      ...m,
+                      metaAcertos: ['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90
+                    }));
+                    onSalvarMaterias(novasMaterias);
+                  }}
+                  className="px-3 py-2 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#C5A059] border border-[#C5A059]/30 rounded text-center text-xs font-bold transition-all cursor-pointer"
+                >
+                  Restaurar Padrão
+                </button>
+              </div>
+
+              {/* Lista de Matérias com Slider */}
+              <div className="space-y-3.5 max-h-[360px] overflow-y-auto pr-1.5 no-scrollbar">
+                {materias.map(m => {
+                  const currentMeta = m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
+                  
+                  return (
+                    <div key={m.id} className="bg-[#0C0E12] border border-[#1E293B]/60 rounded p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-[160px]">
+                        <span className="px-1.5 py-0.5 text-[9px] font-mono font-black rounded text-white shrink-0" style={{ backgroundColor: m.cor }}>
+                          {m.sigla}
+                        </span>
+                        <span className="text-xs font-semibold text-[#E2E8F0] truncate">{m.nome}</span>
+                      </div>
+
+                      <div className="flex items-center gap-3 flex-1 justify-end">
+                        <input
+                          type="range"
+                          min="50"
+                          max="100"
+                          value={currentMeta}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            const novasMaterias = materias.map(x => x.id === m.id ? { ...x, metaAcertos: val } : x);
+                            onSalvarMaterias(novasMaterias);
+                          }}
+                          className="w-full max-w-[180px] accent-[#C5A059] h-1 bg-[#1E293B] rounded-lg appearance-none cursor-pointer"
+                        />
+                        <span className="w-10 text-right font-mono font-bold text-[#C5A059] text-xs">
+                          {currentMeta}%
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
         </div>
 
       </div>
@@ -819,6 +1062,74 @@ export default function DadosEBackup({
 
           </div>
 
+          {/* CARD NOVO: CHAVE DE API GEMINI PESSOAL */}
+          <div className="bg-[#0F172A] border border-[#1E293B] rounded p-5 space-y-4">
+            <div className="flex items-center gap-2 border-b border-[#1E293B]/80 pb-3">
+              <Key size={16} className="text-[#C5A059]" />
+              <h3 className="text-sm font-display font-medium text-white tracking-widest uppercase">Chave API do Gemini Pessoal</h3>
+            </div>
+
+            <p className="text-xs text-[#94A3B8] leading-relaxed">
+              Use sua própria chave do Gemini para realizar diagnósticos de estudos diretamente do seu navegador.
+              <strong className="text-emerald-400"> 100% Seguro: </strong> sua chave é salva apenas neste computador e nunca é transmitida para nossos servidores ou banco de dados.
+            </p>
+
+            <div className="bg-[#1E293B]/30 border border-[#C5A059]/10 p-3 rounded text-[11px] text-[#94A3B8] space-y-1">
+              <p>1. Acesse o <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" className="text-[#C5A059] hover:underline inline-flex items-center gap-0.5">Google AI Studio <ExternalLink size={10} /></a></p>
+              <p>2. Crie uma chave de API gratuita.</p>
+              <p>3. Cole-a abaixo para habilitar o Tutor Coach sem limites da plataforma.</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="relative">
+                <input
+                  type="password"
+                  placeholder="Cole sua API Key (AIzaSy...)"
+                  value={geminiApiKey}
+                  onChange={(e) => setGeminiApiKey(e.target.value)}
+                  className="w-full bg-[#0C0E12] border border-[#2D3748] rounded p-2.5 text-xs text-[#E2E8F0] outline-none focus:border-[#C5A059]"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSalvarGeminiKey}
+                  className="flex-1 px-3 py-2 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#C5A059] border border-[#C5A059]/40 font-bold text-xs rounded transition-all cursor-pointer"
+                >
+                  Salvar Chave
+                </button>
+                {localStorage.getItem('superestrategico_user_gemini_api_key') && (
+                  <button
+                    onClick={handleRemoverGeminiKey}
+                    className="px-3 py-2 bg-rose-955/20 border border-rose-500/30 text-rose-400 hover:bg-rose-700 hover:text-white font-bold text-xs rounded transition-all cursor-pointer"
+                  >
+                    Excluir
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={handleTestarGeminiConexao}
+                disabled={testStatus === 'testing'}
+                className="w-full flex items-center justify-center gap-1.5 px-4 py-2 bg-[#0C0E12] border border-[#1E293B] hover:border-[#C5A059]/30 text-white font-semibold text-xs rounded transition-all cursor-pointer"
+              >
+                {testStatus === 'testing' ? 'Testando Conexão...' : 'Testar Conexão com Gemini'}
+              </button>
+
+              {testStatus !== 'idle' && (
+                <div className={`p-2.5 rounded text-[10px] font-mono leading-relaxed border ${
+                  testStatus === 'success' 
+                    ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-400' 
+                    : testStatus === 'error' 
+                    ? 'bg-rose-950/20 border-rose-500/30 text-rose-400' 
+                    : 'bg-blue-950/20 border-blue-500/30 text-blue-400'
+                }`}>
+                  {testMessage}
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* CARD 2: SIMULAÇÃO PARA TESTE (IA COACH) */}
           <div className="bg-[#0F172A] border border-[#C5A059]/20 rounded p-5 space-y-4">
             <div className="flex items-center gap-2 border-b border-[#1E293B]/80 pb-3">
@@ -851,21 +1162,99 @@ export default function DadosEBackup({
           </div>
 
           {/* CARD 3: ZONA DE PERIGO (RESET DATA) */}
-          <div className="bg-[#0F172A] border border-rose-950/40 rounded p-5 space-y-4">
+          <div className="bg-[#0F172A] border border-rose-950/40 rounded p-5 space-y-5">
             
             <div className="flex items-center gap-2 border-b border-rose-950/30 pb-3 text-rose-400">
               <ShieldAlert size={16} />
-              <h3 className="text-sm font-display font-medium tracking-widest uppercase">Danger Zone • Resetar Dados</h3>
+              <h3 className="text-sm font-display font-medium tracking-widest uppercase">Danger Zone • Resets</h3>
             </div>
 
-            <div className="bg-rose-950/15 border border-rose-900/30 text-rose-300 p-3.5 rounded text-[11px] leading-relaxed">
-              ⚠️ <strong>ATENÇÃO MÁXIMA:</strong> Esta ação apagará definitivamente todo o seu histórico de sessões estudadas, cronômetro, simulados concluídos e metas semanais do navegador, retornando-o ao estado padrão limpo.
-            </div>
-
-            <div className="space-y-3">
-              <div className="space-y-1">
+            {/* RESET 1: DADOS DE ESTUDO */}
+            <div className="bg-rose-950/10 border border-rose-900/25 rounded p-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <Trash2 size={14} className="text-rose-400 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs font-bold text-rose-300 font-mono uppercase tracking-wide">Resetar Dados de Estudo</p>
+                  <p className="text-[10px] text-[#64748B] mt-1 leading-relaxed">
+                    Apaga: histórico de sessões, progresso das aulas, simulados, revisões espaçadas e ciclo atual.
+                    {isLoggedIn && <span className="text-amber-400 block mt-1">⚡ Logado: a nuvem também será limpa antes do reset.</span>}
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-1.5">
                 <label className="text-[9px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
-                  Para confirmar o apagamento completo, digite <strong>RESETAR</strong>:
+                  Digite <strong className="text-rose-400">ESTUDOS</strong> para confirmar:
+                </label>
+                <input
+                  type="text"
+                  placeholder="ESTUDOS"
+                  value={resetEstudoInput}
+                  onChange={(e) => setResetEstudoInput(e.target.value)}
+                  className="w-full bg-[#0C0E12] border border-rose-500/20 rounded p-2 text-xs font-mono text-rose-400 placeholder-rose-950 focus:outline-none focus:border-rose-500/40 text-center"
+                />
+              </div>
+              <button
+                onClick={handleConfirmarResetEstudo}
+                disabled={resetEstudoInput.trim().toUpperCase() !== 'ESTUDOS' || isResettingEstudo}
+                className="w-full flex items-center justify-center gap-1.5 px-4 py-2 bg-rose-950/10 hover:bg-rose-700 hover:text-white border border-rose-500/30 text-rose-400 font-bold text-xs rounded transition-all cursor-pointer disabled:opacity-30 disabled:hover:bg-rose-950/10 disabled:hover:text-rose-400"
+              >
+                <Trash2 size={12} />
+                {isResettingEstudo ? 'Limpando nuvem e reiniciando...' : 'Resetar Dados de Estudo'}
+              </button>
+            </div>
+
+            {/* RESET 2: CONFIGURAÇÕES */}
+            <div className="bg-amber-950/10 border border-amber-900/25 rounded p-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <Sliders size={14} className="text-amber-400 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs font-bold text-amber-300 font-mono uppercase tracking-wide">Resetar Configurações</p>
+                  <p className="text-[10px] text-[#64748B] mt-1 leading-relaxed">
+                    Apaga: timer, listas de questões, token GitHub, diagnóstico IA e planejamento semanal. <span className="text-emerald-400">Não afeta seu histórico de estudos.</span>
+                  </p>
+                </div>
+              </div>
+              {configResetSuccess && (
+                <div className="flex items-center gap-2 text-emerald-400 text-[10px] font-mono">
+                  <CheckCircle size={12} /> Configurações resetadas com sucesso!
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                  Digite <strong className="text-amber-400">CONFIG</strong> para confirmar:
+                </label>
+                <input
+                  type="text"
+                  placeholder="CONFIG"
+                  value={resetConfigInput}
+                  onChange={(e) => setResetConfigInput(e.target.value)}
+                  className="w-full bg-[#0C0E12] border border-amber-500/20 rounded p-2 text-xs font-mono text-amber-400 placeholder-amber-950 focus:outline-none focus:border-amber-500/40 text-center"
+                />
+              </div>
+              <button
+                onClick={handleConfirmarResetConfig}
+                disabled={resetConfigInput.trim().toUpperCase() !== 'CONFIG'}
+                className="w-full flex items-center justify-center gap-1.5 px-4 py-2 bg-amber-950/10 hover:bg-amber-700 hover:text-black border border-amber-500/30 text-amber-400 font-bold text-xs rounded transition-all cursor-pointer disabled:opacity-30"
+              >
+                <Sliders size={12} />
+                Resetar Configurações
+              </button>
+            </div>
+
+            {/* RESET 3: TUDO (EXISTENTE) */}
+            <div className="bg-rose-950/5 border border-rose-900/20 rounded p-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <ShieldAlert size={14} className="text-rose-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs font-bold text-rose-500 font-mono uppercase tracking-wide">Resetar Absolutamente Tudo</p>
+                  <p className="text-[10px] text-[#64748B] mt-1 leading-relaxed">
+                    Apaga dados de estudo + todas as configurações. Retorna ao estado inicial.
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
+                  Digite <strong className="text-rose-500">RESETAR</strong> para confirmar:
                 </label>
                 <input
                   type="text"
@@ -875,7 +1264,6 @@ export default function DadosEBackup({
                   className="w-full bg-[#0C0E12] border border-rose-500/20 rounded p-2 text-xs font-mono text-rose-400 placeholder-rose-950 focus:outline-none focus:border-rose-500/40 text-center"
                 />
               </div>
-
               <button
                 onClick={handleConfirmarResetCompleto}
                 disabled={resetConfirmInput.trim().toUpperCase() !== 'RESETAR'}

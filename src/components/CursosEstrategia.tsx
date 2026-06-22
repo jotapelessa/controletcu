@@ -1,21 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { Materia, Aula, StatusAula, LogSessao } from '../types';
-import { Search, ChevronDown, ChevronUp, Save, Clock, HelpCircle, Check, Play, BookOpen, Layers, Link as LinkIcon, Download, AlertTriangle } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Save, Clock, HelpCircle, Check, Play, BookOpen, Layers, Link as LinkIcon, Download, AlertTriangle, Sparkles, FileText, Calendar, DollarSign, Award, RefreshCcw, Trash2, ArrowLeft, CheckCircle } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 interface CursosProps {
   materias: Materia[];
   onAtualizarAula: (materiaId: string, aulaAtualizada: Aula) => void;
+  onSalvarMaterias: (novasMaterias: Materia[]) => void;
   materiaInicialAbertaId?: string;
   historico?: LogSessao[];
 }
 
-export default function CursosEstrategia({ materias, onAtualizarAula, materiaInicialAbertaId, historico = [] }: CursosProps) {
+export default function CursosEstrategia({ materias, onAtualizarAula, onSalvarMaterias, materiaInicialAbertaId, historico = [] }: CursosProps) {
   const [pesquisa, setPesquisa] = useState('');
   const [materiaFiltro, setMateriaFiltro] = useState<string>('todos');
   const [abertosMaterias, setAbertosMaterias] = useState<{ [key: string]: boolean }>({
     'controle_externo': true, // default open
     'afo_dir_financeiro': true
   });
+
+  // Estados do Modo Seleção / Gerenciamento de Aulas
+  const [modoSelecaoMaterias, setModoSelecaoMaterias] = useState<{ [key: string]: boolean }>({});
+  const [aulasSelecionadas, setAulasSelecionadas] = useState<Set<string>>(new Set());
 
   // Editor Inline de Aula
   const [aulaEmEdicao, setAulaEmEdicao] = useState<string | null>(null);
@@ -25,12 +31,68 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
   const [editErradas, setEditErradas] = useState(0);
   const [editHoras, setEditHoras] = useState(0);
 
-  // Importador
+  // Importador por Link
   const [showImport, setShowImport] = useState(false);
   const [urlImportacao, setUrlImportacao] = useState('');
   const [importando, setImportando] = useState(false);
   const [importErro, setImportErro] = useState('');
   const [importSucesso, setImportSucesso] = useState('');
+
+  const toggleSelecionarAula = (aulaId: string) => {
+    setAulasSelecionadas(prev => {
+      const next = new Set(prev);
+      if (next.has(aulaId)) {
+        next.delete(aulaId);
+      } else {
+        next.add(aulaId);
+      }
+      return next;
+    });
+  };
+
+  const excluirAulasSelecionadas = (materiaId: string) => {
+    const materia = materias.find(m => m.id === materiaId);
+    if (!materia) return;
+
+    const selecionadasDaMateria = materia.aulas.filter(a => aulasSelecionadas.has(a.id));
+    if (selecionadasDaMateria.length === 0) {
+      alert('Nenhuma aula selecionada para exclusão.');
+      return;
+    }
+
+    const confirmacao = window.confirm(
+      `Tem certeza que deseja excluir as ${selecionadasDaMateria.length} aulas selecionadas de "${materia.nome}"? Esta ação não pode ser desfeita.`
+    );
+
+    if (confirmacao) {
+      const aulasRestantes = materia.aulas.filter(a => !aulasSelecionadas.has(a.id));
+      
+      const novasMaterias = materias.map(m => {
+        if (m.id === materiaId) {
+          return {
+            ...m,
+            aulas: aulasRestantes
+          };
+        }
+        return m;
+      });
+
+      onSalvarMaterias(novasMaterias);
+
+      // Limpar seleção
+      setAulasSelecionadas(prev => {
+        const next = new Set(prev);
+        selecionadasDaMateria.forEach(a => next.delete(a.id));
+        return next;
+      });
+
+      // Sair do modo seleção para esta matéria
+      setModoSelecaoMaterias(prev => ({
+        ...prev,
+        [materiaId]: false
+      }));
+    }
+  };
 
   const importarAulas = async () => {
     if (!urlImportacao || !materiaFiltro || materiaFiltro === 'todos') {
@@ -73,22 +135,20 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
             };
       });
 
-      // Atualizar no localStorage e na memória
-      // Aqui, idealmente chamaríamos onAtualizarMateria, mas como a prop é onAtualizarAula, 
-      // precisamos atualizar uma a uma ou delegar pro App.tsx. Para não quebrar, vamos atualizar 
-      // forçando um localStorage update e dando um alerta para dar refresh.
-      // (Em um app real, o onAtualizarMateria seria invocado).
-      const rawMaterias = localStorage.getItem('tcu_materias');
-      if (rawMaterias) {
-        const parsed = JSON.parse(rawMaterias);
-        const idx = parsed.findIndex((m: any) => m.id === materiaFiltro);
-        if (idx !== -1) {
-          parsed[idx].aulas = aulasNovas;
-          localStorage.setItem('tcu_materias', JSON.stringify(parsed));
+      // Atualizar reativamente
+      const novasMaterias = materias.map(m => {
+        if (m.id === materiaFiltro) {
+          return {
+            ...m,
+            aulas: aulasNovas
+          };
         }
-      }
+        return m;
+      });
+
+      onSalvarMaterias(novasMaterias);
       
-      setImportSucesso(`Importação concluída! Foram extraídas ${aulasNovas.length} aulas. Atualize a página para ver as mudanças.`);
+      setImportSucesso(`Importação concluída! Foram extraídas ${aulasNovas.length} aulas.`);
       setUrlImportacao('');
     } catch (err: any) {
       setImportErro(err.message);
@@ -96,6 +156,8 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
       setImportando(false);
     }
   };
+
+
 
   useEffect(() => {
     if (materiaInicialAbertaId) {
@@ -197,17 +259,20 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
   return (
     <div className="space-y-6" id="cursos-estrategia-root">
       
-      {/* Botão para mostrar Importador */}
-      <div className="flex justify-end">
+      {/* Botões para mostrar Importador */}
+      <div className="flex justify-end gap-2.5">
         <button 
-          onClick={() => setShowImport(!showImport)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-[#1E293B] hover:bg-[#1E293B]/80 border border-[#2D3748] rounded text-xs font-semibold text-[#94A3B8] transition-all cursor-pointer"
+          onClick={() => {
+            setShowImport(!showImport);
+          }}
+          className={`flex items-center gap-2 px-3 py-1.5 border rounded text-xs font-semibold transition-all cursor-pointer ${showImport ? 'bg-blue-600 text-white border-blue-600' : 'bg-[#1E293B] hover:bg-[#1E293B]/80 border-[#2D3748] text-[#94A3B8]'}`}
         >
           <LinkIcon size={14} /> Importar Curso por Link
         </button>
       </div>
 
-      {/* Painel do Importador */}
+
+      {/* Painel do Importador por Link */}
       {showImport && (
         <div className="bg-[#0C0E12] border border-[#C5A059]/40 rounded p-4 animate-scale-up space-y-3 shadow-lg">
           <div className="flex items-start gap-2 text-[#C5A059]">
@@ -318,6 +383,30 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
                   </div>
 
                   <div className="flex items-center space-x-4">
+                    {/* Botão Gerenciar Aulas */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Se não estiver aberto, abre o accordion ao gerenciar
+                        if (!aberto) {
+                          toggleMateria(m.id);
+                        }
+                        setModoSelecaoMaterias(prev => ({
+                          ...prev,
+                          [m.id]: !prev[m.id]
+                        }));
+                      }}
+                      className={`px-2.5 py-1.5 rounded text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                        modoSelecaoMaterias[m.id]
+                          ? 'bg-[#C5A059]/20 border-[#C5A059]/40 text-[#C5A059] hover:bg-[#C5A059]/30 shadow-inner'
+                          : 'bg-[#1E293B] border-[#2D3748] text-[#94A3B8] hover:text-[#C5A059] hover:bg-[#1E293B]/80'
+                      }`}
+                    >
+                      <Layers size={11} />
+                      {modoSelecaoMaterias[m.id] ? 'Cancelar Seleção' : 'Gerenciar Aulas'}
+                    </button>
+
                     {/* Barra de Progresso Interna */}
                     <div className="w-24 bg-[#0C0E12] h-1.5 rounded-full overflow-hidden hidden sm:block">
                       <div className="h-full rounded-full" style={{ width: `${percConcluido}%`, backgroundColor: m.cor }} />
@@ -329,12 +418,89 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
                 {/* Lista de Aulas e editor */}
                 {aberto && (
                   <div className="divide-y divide-[#1E293B]/40 bg-[#0C0E12]/30 duration-300">
+                    {/* Barra de Ações em Lote */}
+                    {modoSelecaoMaterias[m.id] && (
+                      <div className="p-3 bg-[#0F172A] border-b border-[#1E293B] flex flex-col md:flex-row gap-3 items-center justify-between animate-fade-in">
+                        <div className="flex items-center gap-2 text-xs font-semibold text-[#94A3B8]">
+                          <CheckCircle size={14} className="text-[#C5A059]" />
+                          <span>
+                            {m.aulas.filter(a => aulasSelecionadas.has(a.id)).length} de {m.aulas.length} aulas selecionadas
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 justify-end w-full md:w-auto">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAulasSelecionadas(prev => {
+                                const next = new Set(prev);
+                                m.aulas.forEach(a => next.add(a.id));
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-[#1E293B] hover:bg-[#1E293B]/80 text-white border border-[#2D3748] rounded text-[11px] font-bold transition-colors cursor-pointer"
+                          >
+                            Selecionar Tudo
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAulasSelecionadas(prev => {
+                                const next = new Set(prev);
+                                m.aulas.forEach(a => {
+                                  if (next.has(a.id)) {
+                                    next.delete(a.id);
+                                  } else {
+                                    next.add(a.id);
+                                  }
+                                });
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-[#1E293B] hover:bg-[#1E293B]/80 text-white border border-[#2D3748] rounded text-[11px] font-bold transition-colors cursor-pointer"
+                          >
+                            Inverter Seleção
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAulasSelecionadas(prev => {
+                                const next = new Set(prev);
+                                m.aulas.forEach(a => next.delete(a.id));
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] border border-[#2D3748] rounded text-[11px] font-bold transition-colors cursor-pointer"
+                          >
+                            Limpar Seleção
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => excluirAulasSelecionadas(m.id)}
+                            disabled={m.aulas.filter(a => aulasSelecionadas.has(a.id)).length === 0}
+                            className="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-40 disabled:hover:bg-rose-500/10 disabled:cursor-not-allowed text-rose-400 border border-rose-500/30 rounded text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer"
+                          >
+                            <Trash2 size={12} /> Excluir Selecionadas
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {m.aulas.map(a => {
                       const idEdicao = `${m.id}_${a.id}`;
                       const estaEditando = aulaEmEdicao === idEdicao;
 
                       return (
-                        <div key={a.id} className="p-4 transition-all" id={`lecture-row-${a.id}`}>
+                        <div 
+                          key={a.id} 
+                          className={`p-4 transition-all ${
+                            modoSelecaoMaterias[m.id]
+                              ? aulasSelecionadas.has(a.id)
+                                ? 'bg-[#C5A059]/10 hover:bg-[#C5A059]/15'
+                                : 'hover:bg-[#1E293B]/10'
+                              : 'hover:bg-[#1E293B]/10'
+                          }`} 
+                          id={`lecture-row-${a.id}`}
+                        >
                           {estaEditando ? (
                             /* DESIGN DO EDITOR INTEGRADO DE AULA */
                             <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-4 grid grid-cols-1 md:grid-cols-4 gap-4 animate-scale-up" id="editor-aula-inline">
@@ -432,58 +598,87 @@ export default function CursosEstrategia({ materias, onAtualizarAula, materiaIni
                             </div>
                           ) : (
                             /* VISUALIZAÇÃO PADRÃO DE DETALHE DE AULA */
-                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-[#E2E8F0]" id="standard-lecture-view">
-                              <div className="space-y-1.5 cursor-pointer flex-1" onClick={() => iniciarEdicao(m.id, a)}>
-                                <div className="flex items-center gap-2.5">
-                                  <span className="text-[10px] bg-[#1E293B] font-mono text-[#94A3B8] font-bold px-1.5 py-0.5 rounded border border-[#2D3748]">
-                                    Aula {a.numero.toString().padStart(2, '0')}
-                                  </span>
-                                  <h5 className="font-semibold text-xs sm:text-sm text-white flex-1 hover:text-[#C5A059] transition-colors leading-normal">
-                                    {a.titulo}
-                                  </h5>
-                                  {a.status === StatusAula.Concluido && (
-                                    <span className="w-4 h-4 rounded-full bg-[#C5A059] text-black flex items-center justify-center shrink-0">
-                                      <Check size={10} strokeWidth={4} />
-                                    </span>
-                                  )}
+                            <div className="flex items-center gap-3 text-[#E2E8F0]" id="standard-lecture-view">
+                              
+                              {/* Checkbox se no modo de seleção */}
+                              {modoSelecaoMaterias[m.id] && (
+                                <div className="flex items-center pr-1 shrink-0 select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={aulasSelecionadas.has(a.id)}
+                                    onChange={(e) => {
+                                      e.stopPropagation();
+                                      toggleSelecionarAula(a.id);
+                                    }}
+                                    className="w-4 h-4 rounded bg-[#0C0E12] border-[#2D3748] text-[#C5A059] focus:ring-[#C5A059]/30 focus:ring-offset-[#0C0E12] accent-[#C5A059] cursor-pointer"
+                                  />
                                 </div>
-                                
-                                {/* Estatísticas da Aula */}
-                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#64748B] font-sans" id="lecture-stats-badges">
-                                  <span className="flex items-center gap-1">
-                                    <Clock size={12} /> <span className="text-[#94A3B8] font-mono font-semibold">{a.horasEstudadas.toFixed(1)}h</span> estudadas
-                                  </span>
+                              )}
 
-                                  <span className="flex items-center gap-1">
-                                    <Layers size={12} className="text-[#C5A059]" /> <span className="text-[#94A3B8] font-mono font-semibold">{historico.filter(h => h.aulaId === a.id).length}x</span> revisões
-                                  </span>
-                                  
-                                  {a.questoesResolvidas > 0 ? (
-                                    <span className="flex items-center gap-1 font-mono text-[#64748B]">
-                                      <HelpCircle size={12} /> <span className="text-[#94A3B8]">{a.questoesResolvidas} questões</span> (<span className={Math.round((a.questoesAcertadas / a.questoesResolvidas) * 100) >= 80 ? 'text-[#C5A059] font-bold' : 'text-[#94A3B8]'}>{Math.round((a.questoesAcertadas / a.questoesResolvidas) * 100)}% acerto</span>)
-                                    </span>
-                                  ) : (
-                                    <span className="text-[10px] text-[#475569]">Nenhuma questão vinculada</span>
-                                  )}
-                                  
-                                  {a.dataConclusao && (
-                                    <span className="text-emerald-400 font-semibold font-mono text-[10px]">Concluído {a.dataConclusao}</span>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-t-0 border-[#1E293B]/40 pt-2 sm:pt-0">
-                                {/* Badge de Status real */}
-                                <span className={`text-[9px] font-mono font-bold rounded px-2.5 py-1 tracking-wider uppercase border ${getStatusColor(a.status)}`}>
-                                  {a.status}
-                                </span>
-                                
-                                <button
-                                  onClick={() => iniciarEdicao(m.id, a)}
-                                  className="px-3 py-1 bg-[#1E293B] hover:bg-[#1E293B]/80 hover:text-[#C5A059] border border-[#2D3748] rounded text-xs font-semibold text-[#94A3B8] transition-all font-sans cursor-pointer"
+                              <div className="flex-1 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                <div 
+                                  className="space-y-1.5 cursor-pointer flex-1" 
+                                  onClick={() => {
+                                    if (modoSelecaoMaterias[m.id]) {
+                                      toggleSelecionarAula(a.id);
+                                    } else {
+                                      iniciarEdicao(m.id, a);
+                                    }
+                                  }}
                                 >
-                                  Editar
-                                </button>
+                                  <div className="flex items-center gap-2.5">
+                                    <span className="text-[10px] bg-[#1E293B] font-mono text-[#94A3B8] font-bold px-1.5 py-0.5 rounded border border-[#2D3748]">
+                                      Aula {a.numero.toString().padStart(2, '0')}
+                                    </span>
+                                    <h5 className="font-semibold text-xs sm:text-sm text-white flex-1 hover:text-[#C5A059] transition-colors leading-normal">
+                                      {a.titulo}
+                                    </h5>
+                                    {a.status === StatusAula.Concluido && (
+                                      <span className="w-4 h-4 rounded-full bg-[#C5A059] text-black flex items-center justify-center shrink-0">
+                                        <Check size={10} strokeWidth={4} />
+                                      </span>
+                                    )}
+                                  </div>
+                                  
+                                  {/* Estatísticas da Aula */}
+                                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[#64748B] font-sans" id="lecture-stats-badges">
+                                    <span className="flex items-center gap-1">
+                                      <Clock size={12} /> <span className="text-[#94A3B8] font-mono font-semibold">{a.horasEstudadas.toFixed(1)}h</span> estudadas
+                                    </span>
+
+                                    <span className="flex items-center gap-1">
+                                      <Layers size={12} className="text-[#C5A059]" /> <span className="text-[#94A3B8] font-mono font-semibold">{historico.filter(h => h.aulaId === a.id).length}x</span> revisões
+                                    </span>
+                                    
+                                    {a.questoesResolvidas > 0 ? (
+                                      <span className="flex items-center gap-1 font-mono text-[#64748B]">
+                                        <HelpCircle size={12} /> <span className="text-[#94A3B8]">{a.questoesResolvidas} questões</span> (<span className={Math.round((a.questoesAcertadas / a.questoesResolvidas) * 100) >= 80 ? 'text-[#C5A059] font-bold' : 'text-[#94A3B8]'}>{Math.round((a.questoesAcertadas / a.questoesResolvidas) * 100)}% acerto</span>)
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-[#475569]">Nenhuma questão vinculada</span>
+                                    )}
+                                    
+                                    {a.dataConclusao && (
+                                      <span className="text-emerald-400 font-semibold font-mono text-[10px]">Concluído {a.dataConclusao}</span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-t-0 border-[#1E293B]/40 pt-2 sm:pt-0">
+                                  {/* Badge de Status real */}
+                                  <span className={`text-[9px] font-mono font-bold rounded px-2.5 py-1 tracking-wider uppercase border ${getStatusColor(a.status)}`}>
+                                    {a.status}
+                                  </span>
+                                  
+                                  {!modoSelecaoMaterias[m.id] && (
+                                    <button
+                                      onClick={() => iniciarEdicao(m.id, a)}
+                                      className="px-3 py-1 bg-[#1E293B] hover:bg-[#1E293B]/80 hover:text-[#C5A059] border border-[#2D3748] rounded text-xs font-semibold text-[#94A3B8] transition-all font-sans cursor-pointer"
+                                    >
+                                      Editar
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           )}

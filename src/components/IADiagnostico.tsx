@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Materia, Simulado, LogSessao, StatusAula } from '../types';
 import { Sparkles, BarChart2, CheckCircle, RefreshCcw, BookOpen, Clock, Award, ShieldAlert, AlertTriangle, TrendingUp } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 
 interface IAProps {
@@ -12,23 +13,10 @@ interface IAProps {
 export default function IADiagnostico({ materias, simulados, historico }: IAProps) {
   const [loading, setLoading] = useState(false);
   const [diagnostico, setDiagnostico] = useState<string | null>(() => {
-    return localStorage.getItem('tcu_ia_diagnostico_recente') || null;
+    return localStorage.getItem('superestrategico_ia_diagnostico_recente') || null;
   });
   const [loadingMessage, setLoadingMessage] = useState('');
   const [checklistStatus, setChecklistStatus] = useState<boolean[]>([]);
-
-  // Calcular estatísticas totais para enviar e exibir
-  let totalHoras = 0;
-  let totalQuestoes = 0;
-  let totalAcertos = 0;
-
-  materias.forEach(m => {
-    m.aulas.forEach(a => {
-      totalQuestoes += (a.questoesResolvidas || 0);
-      totalAcertos += (a.questoesAcertadas || 0);
-      totalHoras += (a.horasEstudadas || 0);
-    });
-  });
 
   // 1. Carga Horária nos últimos 7 dias
   const agora = new Date();
@@ -43,21 +31,42 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     }
   });
 
+  // Calcular estatísticas totais para enviar e exibir
+  let totalHoras = 0;
+  let totalQuestoes = 0;
+  let totalAcertos = 0;
+
   // 2. Pior Matéria (Ponto Crítico)
   let piorMateriaNome = "Nenhuma";
   let piorMateriaSigla = "";
   let piorMateriaAcerto = 100;
-  
+
   materias.forEach(m => {
-    let resolv = 0;
-    let acert = 0;
-    m.aulas.forEach(a => {
-      resolv += (a.questoesResolvidas || 0);
-      acert += (a.questoesAcertadas || 0);
-    });
+    let horas = 0;
+    let questoes = 0;
+    let acertos = 0;
     
-    if (resolv > 0) {
-      const taxa = (acert / resolv) * 100;
+    m.aulas.forEach(a => {
+      questoes += (a.questoesResolvidas || 0);
+      acertos += (a.questoesAcertadas || 0);
+      horas += (a.horasEstudadas || 0);
+    });
+
+    const histMateria = historico.filter(h => h.materiaId === m.id);
+    const mHorasHist = histMateria.reduce((acc, curr) => acc + (curr.duracaoMinutos / 60), 0);
+    const mQuestHist = histMateria.reduce((acc, curr) => acc + (curr.questoesResolvidas || 0), 0);
+    const mAcertHist = histMateria.reduce((acc, curr) => acc + (curr.questoesAcertadas || 0), 0);
+
+    const finalHoras = Math.max(horas, mHorasHist);
+    const finalQuestoes = Math.max(questoes, mQuestHist);
+    const finalAcertos = Math.max(acertos, mAcertHist);
+
+    totalHoras += finalHoras;
+    totalQuestoes += finalQuestoes;
+    totalAcertos += finalAcertos;
+
+    if (finalQuestoes > 0) {
+      const taxa = (finalAcertos / finalQuestoes) * 100;
       if (taxa < piorMateriaAcerto) {
         piorMateriaAcerto = taxa;
         piorMateriaNome = m.nome;
@@ -131,7 +140,7 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
 
   useEffect(() => {
     if (secoes && secoes.passos.length > 0) {
-      const saved = localStorage.getItem('tcu_ia_checklist_status');
+      const saved = localStorage.getItem('superestrategico_ia_checklist_status');
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
@@ -149,7 +158,7 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     const nextStatus = [...checklistStatus];
     nextStatus[idx] = !nextStatus[idx];
     setChecklistStatus(nextStatus);
-    localStorage.setItem('tcu_ia_checklist_status', JSON.stringify(nextStatus));
+    localStorage.setItem('superestrategico_ia_checklist_status', JSON.stringify(nextStatus));
   };
 
   const triggerDiagnostic = async () => {
@@ -157,7 +166,7 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     setLoadingMessage("Analisando seu desempenho e consolidação do edital do Estratégia...");
     
     const steps = [
-      "Calculando média harmônica de erros na banca FGV...",
+      "Calculando média harmônica de erros...",
       "Cruzando seu histórico de Controle Externo (RITCU) com o de AFO...",
       "Avaliando curvas de esquecimento das revisões espaçadas pendentes...",
       "Consolidando relatórios fiscais do TCU e pontos de peso no Edital...",
@@ -173,32 +182,187 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     }, 1500);
 
     try {
-      const response = await fetch("/api/diagnostico", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          materias,
-          simulados,
-          historico,
-          totalHoras,
-          totalQuestoes,
-          totalAcertos
-        })
-      });
+      const userApiKey = localStorage.getItem('superestrategico_user_gemini_api_key');
+      let resultText = '';
 
-      const result = await response.json();
+      if (userApiKey) {
+        // Formatar resumo das matérias
+        const materiasResumo = materias.map((m: any) => {
+          const concluidas = m.aulas.filter((a: any) => a.status === StatusAula.Concluido).length;
+          const emProgresso = m.aulas.filter((a: any) => a.status !== StatusAula.NaoIniciado && a.status !== StatusAula.Concluido).length;
+          
+          let totQuestoes = 0;
+          let totAcertos = 0;
+          m.aulas.forEach((a: any) => {
+            totQuestoes += (a.questoesResolvidas || 0);
+            totAcertos += (a.questoesAcertadas || 0);
+          });
+
+          const histMateria = (historico || []).filter((h: any) => h.materiaId === m.id);
+          const mQuestHist = histMateria.reduce((acc: number, curr: any) => acc + (curr.questoesResolvidas || 0), 0);
+          const mAcertHist = histMateria.reduce((acc: number, curr: any) => acc + (curr.questoesAcertadas || 0), 0);
+
+          const finalQuestoes = Math.max(totQuestoes, mQuestHist);
+          const finalAcertos = Math.max(totAcertos, mAcertHist);
+          const taxaAcerto = finalQuestoes > 0 ? Math.round((finalAcertos / finalQuestoes) * 100) : 0;
+          const meta = m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
+
+          return `- **${m.nome} (${m.sigla})**: ${concluidas}/${m.aulas.length} aulas concluídas. ${emProgresso} em progresso. Questões resolvidas: ${finalQuestoes}, Acerto: ${taxaAcerto}% (Meta Configurada: ${meta}%)`;
+        }).join("\n");
+
+        const simuladosResumo = simulados && simulados.length > 0
+          ? simulados.map((s: any) => `- **${s.titulo}** (${s.data}): ${s.questoesAcertadas}/${s.totalQuestoes} acertos (${Math.round((s.questoesAcertadas/s.totalQuestoes)*100)}%)`).join("\n")
+          : "Nenhum simulado cadastrado ainda.";
+
+        const historicoResumo = historico && historico.length > 0
+          ? historico.slice(0, 5).map((h: any) => `- ${new Date(h.data).toLocaleDateString('pt-BR')}: Estudou ${h.materiaId} por ${h.duracaoMinutos} min (${h.tipo})`).join("\n")
+          : "Nenhum histórico recente.";
+
+        const prompt = `Você é um Coach e Mentor altamente especializado no concurso de Auditor de Controle Externo do TCU (Tribunal de Contas da União), a área mais concorrida de controle. 
+Analise as estatísticas atuais de estudos deste assinante do Estratégia Concursos e gere um diagnóstico de estudos estratégico profissional, com feedback crítico, construtivo e motivador em Português (Brasil).
+
+### Métricas de Estudo Gerais:
+- **Total de Horas Estudadas**: ${(totalHoras ?? 0).toFixed(1)} horas
+- **Total de Questões Feitas**: ${totalQuestoes ?? 0}
+- **Média Geral de Acertos**: ${(totalQuestoes ?? 0) > 0 ? Math.round(((totalAcertos ?? 0) / (totalQuestoes ?? 1)) * 100) : 0}%
+
+### Desempenho por Matéria (Baseado no Edital Estratégia):
+${materiasResumo}
+
+### Histórico de Simulados da Banca:
+${simuladosResumo}
+
+### Últimas Sessões de Estudo Registradas:
+${historicoResumo}
+
+### Instruções Cruciais de Estrutura da Resposta:
+Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag indicados abaixo. Não coloque nenhum texto fora delas:
+
+[DIAGNOSTICO_GERAL]
+(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 90-95% (ou conforme metas configuradas por matéria) exigido para o TCU.)
+
+[ALERTA_FRAQUEZA]
+(Identifique e disserte sobre as matérias com pior desempenho ou inércia de estudos, alertando sobre o risco estatístico destas no edital do TCU.)
+
+[RECOMENDACOES]
+(Dicas práticas de remediação para o ciclo de estudos e gestão de revisões espaçadas.)
+
+[PASSOS]
+- [ ] Passo 1
+- [ ] Passo 2
+(Defina um checklist com 2 ou 3 passos de ação imediata que o usuário deve seguir hoje. Utilize obrigatoriamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
+
+Mantenha uma linguagem acadêmica, séria e focada na excelência profissional que o cargo de Auditor exige.`;
+
+        let model = 'gemini-3.5-flash';
+        const safetySettings = [
+          {
+            category: 'HARM_CATEGORY_HARASSMENT',
+            threshold: 'BLOCK_NONE'
+          },
+          {
+            category: 'HARM_CATEGORY_HATE_SPEECH',
+            threshold: 'BLOCK_NONE'
+          },
+          {
+            category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+            threshold: 'BLOCK_NONE'
+          },
+          {
+            category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+            threshold: 'BLOCK_NONE'
+          }
+        ];
+
+        let response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${userApiKey}`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            safetySettings
+          })
+        });
+
+        let data = await response.json().catch(() => ({}));
+
+        // Se o modelo estiver sobrecarregado (429/503 ou erro de alta demanda/overload), tenta fallback para gemini-pro-latest
+        if (!response.ok && (response.status === 429 || response.status === 503 || data.error?.message?.toLowerCase().includes('demand') || data.error?.message?.toLowerCase().includes('overload'))) {
+          model = 'gemini-pro-latest';
+          response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${userApiKey}`, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              safetySettings
+            })
+          });
+          data = await response.json().catch(() => ({}));
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error?.message || `Erro HTTP ${response.status}`);
+        }
+
+        const candidate = data.candidates?.[0];
+        resultText = candidate?.content?.parts?.[0]?.text || '';
+        
+        if (!resultText && candidate) {
+          const reason = candidate.finishReason;
+          if (reason === 'SAFETY') {
+            throw new Error('A resposta foi bloqueada pelos filtros de segurança da API do Gemini.');
+          } else if (reason && reason !== 'STOP') {
+            throw new Error(`Geração interrompida prematuramente pela API (Motivo: ${reason}).`);
+          }
+        }
+      } else {
+        const { data: authData } = await supabase.auth.getSession();
+        const token = authData?.session?.access_token;
+
+        const response = await fetch("/api/diagnostico", {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            ...(token ? { "Authorization": `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            materias,
+            simulados,
+            historico,
+            totalHoras,
+            totalQuestoes,
+            totalAcertos
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error?.message || `Erro HTTP ${response.status}`);
+        }
+
+        const result = await response.json();
+        if (result.success && result.diagnostico) {
+          resultText = result.diagnostico;
+        } else {
+          throw new Error(result.error || "Erro retornado do servidor de IA.");
+        }
+      }
+
       clearInterval(interval);
 
-      if (result.success && result.diagnostico) {
-        setDiagnostico(result.diagnostico);
-        localStorage.setItem('tcu_ia_diagnostico_recente', result.diagnostico);
+      if (resultText) {
+        setDiagnostico(resultText);
+        localStorage.setItem('superestrategico_ia_diagnostico_recente', resultText);
       } else {
-        setDiagnostico("⚠️ Erro retornado ao contatar o servidor do Diagnóstico Inteligente. Por favor revise seus segredos.");
+        setDiagnostico("⚠️ Não foi possível retornar o laudo do Tutor Coach. Verifique se há dados suficientes.");
       }
     } catch (e: any) {
       clearInterval(interval);
       console.error(e);
-      setDiagnostico(`❌ Falha na conexão com a inteligência do TCU Coach: ${e.message || 'Erro de rede'}`);
+      setDiagnostico(`❌ Falha na conexão com a inteligência do IA Coach: ${e.message || 'Erro de rede'}`);
     } finally {
       setLoading(false);
     }
@@ -290,7 +454,7 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
           </div>
 
           <h2 className="text-xl sm:text-2xl font-display font-medium text-white">
-            Consultor de Estudos TCU Coach
+            Consultor de Estudos IA Coach
           </h2>
           <p className="text-xs text-[#94A3B8] leading-relaxed font-sans">
             Com base no seu progresso total do material do <strong>Estratégia Concursos</strong>, histórico recente de simulados da banca e metas das suas repetições espaçadas, nossa IA gera um diagnóstico analítico idêntico ao de um auditor fiscal experiente, ajudando-o a corrigir rotas e blindar seus pontos fracos de memorização antes da prova!
@@ -321,7 +485,7 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
             <RefreshCcw size={24} />
           </div>
           <div className="space-y-1">
-            <h4 className="text-sm font-bold text-white font-display">O TCU Coach está processando suas planilhas...</h4>
+            <h4 className="text-sm font-bold text-white font-display">O IA Coach está processando suas planilhas...</h4>
             <p className="text-xs text-[#94A3B8] font-sans italic max-w-md mx-auto">"{loadingMessage}"</p>
           </div>
         </div>
@@ -422,7 +586,7 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
                 <div className="bg-gradient-to-br from-slate-950 via-[#0F172A] to-rose-950/15 border border-rose-500/20 rounded p-5 space-y-4">
                   <div className="flex items-center gap-2 border-b border-rose-950/30 pb-3 text-rose-400">
                     <ShieldAlert size={16} />
-                    <h3 className="text-xs font-mono font-bold tracking-widest uppercase">Zonas de Vulnerabilidade FGV</h3>
+                    <h3 className="text-xs font-mono font-bold tracking-widest uppercase">Zonas de Vulnerabilidade por Disciplina</h3>
                   </div>
                   <div className="prose prose-invert max-w-none text-rose-100 leading-relaxed font-sans space-y-1">
                     {renderMarkdown(secoes.alerta)}

@@ -20,7 +20,8 @@ import {
   BookOpenCheck,
   Calendar,
   Layers,
-  ChevronRight
+  ChevronRight,
+  X
 } from 'lucide-react';
 
 interface CicloProps {
@@ -39,9 +40,37 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   const materiaAtiva = materias.find(m => m.id === currentSlot?.materiaId) || materias[0];
 
   // State para o Cronômetro
-  const [segundos, setSegundos] = useState(0);
+  const [segundos, setSegundos] = useState<number>(() => {
+    const saved = localStorage.getItem('superestrategico_timer_segundos');
+    return saved ? parseInt(saved, 10) : 0;
+  });
   const [rodando, setRodando] = useState(false);
-  const [modoRegressivo, setModoRegressivo] = useState(false);
+  const [modoRegressivo, setModoRegressivo] = useState<boolean>(() => {
+    return localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true';
+  });
+
+  const [horaInicio, setHoraInicio] = useState<string | null>(() => localStorage.getItem('superestrategico_timer_hora_inicio'));
+  const [horaFim, setHoraFim] = useState<string | null>(() => localStorage.getItem('superestrategico_timer_hora_fim'));
+  const [acertosMarcados, setAcertosMarcados] = useState<number[]>(() => {
+    const saved = localStorage.getItem('superestrategico_timer_correct_list');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [errosMarcados, setErrosMarcados] = useState<number[]>(() => {
+    const saved = localStorage.getItem('superestrategico_timer_wrong_list');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [limiteQuestoes, setLimiteQuestoes] = useState<number>(() => {
+    const saved = localStorage.getItem('superestrategico_timer_limite_questoes');
+    return saved ? parseInt(saved, 10) : 50;
+  });
+
+  const [mostrarModalFoco, setMostrarModalFoco] = useState<boolean>(() => {
+    return localStorage.getItem('superestrategico_timer_modal_open') === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('superestrategico_timer_modal_open', mostrarModalFoco.toString());
+  }, [mostrarModalFoco]);
   
   // Timer de contagem regressiva baseado nos minutos do Ciclo (geralmente 90)
   const targetMinutos = currentSlot ? currentSlot.tempoMinutos : 90;
@@ -56,9 +85,25 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   const [questoesResolvidas, setQuestoesResolvidas] = useState(0);
   const [questoesAcertadas, setQuestoesAcertadas] = useState(0);
   const [questoesErradas, setQuestoesErradas] = useState(0);
-  const [tipoEstudo, setTipoEstudo] = useState<'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão'>('Teoria (PDF)');
+  const [tipoEstudo, setTipoEstudo] = useState<'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards'>('Teoria (PDF)');
   const [comentarios, setComentarios] = useState('');
   const [tempoMinutosCustom, setTempoMinutosCustom] = useState(targetMinutos);
+
+  // Última sessão de estudos desta aula específica (memoizado de forma linear O(N) para alta performance)
+  const ultimoLog = React.useMemo(() => {
+    const logs = historico || [];
+    if (logs.length === 0) return null;
+    let latest: LogSessao | null = null;
+    for (let i = 0; i < logs.length; i++) {
+      const log = logs[i];
+      if (log.aulaId === aulaSelecionadaId) {
+        if (!latest || log.data > latest.data) {
+          latest = log;
+        }
+      }
+    }
+    return latest;
+  }, [historico, aulaSelecionadaId]);
 
   // --- SELEÇÃO DE MATÉRIA NO PAINEL ANALÍTICO DE CICLOS ---
   const [materiaAnaliticaId, setMateriaAnaliticaId] = useState<string>(materias[0]?.id || '');
@@ -76,6 +121,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     if (rodando) {
       timerRef.current = setInterval(() => {
         setSegundos(prev => {
+          let next;
           if (modoRegressivo) {
             if (prev <= 1) {
               if (timerRef.current) {
@@ -84,12 +130,15 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
               }
               setRodando(false);
               setMostrarFormLog(true);
-              return targetMinutos * 60;
+              next = targetMinutos * 60;
+            } else {
+              next = prev - 1;
             }
-            return prev - 1;
           } else {
-            return prev + 1;
+            next = prev + 1;
           }
+          localStorage.setItem('superestrategico_timer_segundos', next.toString());
+          return next;
         });
       }, 1000);
     } else {
@@ -103,7 +152,22 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
   // Alternar rodar/pausa
   const handleTogglePlay = () => {
-    setRodando(!rodando);
+    const nextRodando = !rodando;
+    setRodando(nextRodando);
+
+    const timeStr = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+    if (nextRodando) {
+      if (!horaInicio) {
+        setHoraInicio(timeStr);
+        localStorage.setItem('superestrategico_timer_hora_inicio', timeStr);
+      }
+      setHoraFim(null);
+      localStorage.removeItem('superestrategico_timer_hora_fim');
+    } else {
+      setHoraFim(timeStr);
+      localStorage.setItem('superestrategico_timer_hora_fim', timeStr);
+    }
   };
 
   // Resetar cronômetro
@@ -111,19 +175,37 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setRodando(false);
     if (modoRegressivo) {
       setSegundos(targetMinutos * 60);
+      localStorage.setItem('superestrategico_timer_segundos', (targetMinutos * 60).toString());
     } else {
       setSegundos(0);
+      localStorage.setItem('superestrategico_timer_segundos', '0');
     }
+
+    setHoraInicio(null);
+    setHoraFim(null);
+    setAcertosMarcados([]);
+    setErrosMarcados([]);
+    setQuestoesResolvidas(0);
+    setQuestoesAcertadas(0);
+    setQuestoesErradas(0);
+
+    localStorage.removeItem('superestrategico_timer_hora_inicio');
+    localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_correct_list');
+    localStorage.removeItem('superestrategico_timer_wrong_list');
   };
 
   // Alternar entre contar tempo (Progressivo) ou Cronômetro Alvo do Ciclo (Regressivo)
   const handleToggleTimerMode = (regressivo: boolean) => {
     setRodando(false);
     setModoRegressivo(regressivo);
+    localStorage.setItem('superestrategico_timer_modo_regressivo', regressivo.toString());
     if (regressivo) {
       setSegundos(targetMinutos * 60);
+      localStorage.setItem('superestrategico_timer_segundos', (targetMinutos * 60).toString());
     } else {
       setSegundos(0);
+      localStorage.setItem('superestrategico_timer_segundos', '0');
     }
   };
 
@@ -136,7 +218,18 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     });
     setRodando(false);
     setSegundos(0);
+    localStorage.setItem('superestrategico_timer_segundos', '0');
     setModoRegressivo(false);
+    localStorage.setItem('superestrategico_timer_modo_regressivo', 'false');
+
+    setHoraInicio(null);
+    setHoraFim(null);
+    setAcertosMarcados([]);
+    setErrosMarcados([]);
+    localStorage.removeItem('superestrategico_timer_hora_inicio');
+    localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_correct_list');
+    localStorage.removeItem('superestrategico_timer_wrong_list');
   };
 
   // Voltar o ciclo
@@ -148,7 +241,18 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     });
     setRodando(false);
     setSegundos(0);
+    localStorage.setItem('superestrategico_timer_segundos', '0');
     setModoRegressivo(false);
+    localStorage.setItem('superestrategico_timer_modo_regressivo', 'false');
+
+    setHoraInicio(null);
+    setHoraFim(null);
+    setAcertosMarcados([]);
+    setErrosMarcados([]);
+    localStorage.removeItem('superestrategico_timer_hora_inicio');
+    localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_correct_list');
+    localStorage.removeItem('superestrategico_timer_wrong_list');
   };
 
   // Formatar Segundos para HH:MM:SS
@@ -168,6 +272,13 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
     setTempoMinutosCustom(minutosRealizados > 0 ? minutosRealizados : targetMinutos);
     setRodando(false);
+
+    if (!horaFim) {
+      const timeStr = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+      setHoraFim(timeStr);
+      localStorage.setItem('superestrategico_timer_hora_fim', timeStr);
+    }
+
     setMostrarFormLog(true);
   };
 
@@ -186,7 +297,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       comentarios: comentarios || undefined
     });
 
-    // Resetar campos
+    // Resetar campos e localStorage da sessão
     setMostrarFormLog(false);
     setQuestoesResolvidas(0);
     setQuestoesAcertadas(0);
@@ -194,10 +305,73 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setComentarios('');
     setSegundos(0);
     setRodando(false);
+    setHoraInicio(null);
+    setHoraFim(null);
+    setAcertosMarcados([]);
+    setErrosMarcados([]);
+    setMostrarModalFoco(false);
+
+    localStorage.removeItem('superestrategico_timer_segundos');
+    localStorage.removeItem('superestrategico_timer_hora_inicio');
+    localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_correct_list');
+    localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_modal_open');
 
     alert("Excelente! Sessão de estudos salva e vinculada ao material Estratégia TCU. O ciclo sugere avançar de matéria!");
     handleProximoItemCiclo();
   };
+
+  // Funções para controle do grid gabarito
+  const handleToggleAcerto = (numeroQuestao: number) => {
+    setAcertosMarcados(prev => {
+      let next;
+      if (prev.includes(numeroQuestao)) {
+        next = prev.filter(n => n !== numeroQuestao);
+      } else {
+        next = [...prev, numeroQuestao];
+      }
+      localStorage.setItem('superestrategico_timer_correct_list', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const handleToggleErro = (numeroQuestao: number) => {
+    setErrosMarcados(prev => {
+      let next;
+      if (prev.includes(numeroQuestao)) {
+        next = prev.filter(n => n !== numeroQuestao);
+      } else {
+        next = [...prev, numeroQuestao];
+      }
+      localStorage.setItem('superestrategico_timer_wrong_list', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const handleClearGabarito = () => {
+    if (window.confirm("Deseja realmente limpar todas as marcações do gabarito?")) {
+      setAcertosMarcados([]);
+      setErrosMarcados([]);
+      localStorage.removeItem('superestrategico_timer_correct_list');
+      localStorage.removeItem('superestrategico_timer_wrong_list');
+    }
+  };
+
+  const handleToggleLimiteQuestoes = () => {
+    const novoLimite = limiteQuestoes === 50 ? 100 : 50;
+    setLimiteQuestoes(novoLimite);
+    localStorage.setItem('superestrategico_timer_limite_questoes', novoLimite.toString());
+  };
+
+  // Sincronizar contagem de questões dos grids com o formulário
+  useEffect(() => {
+    const acertos = acertosMarcados.length;
+    const erros = errosMarcados.length;
+    setQuestoesAcertadas(acertos);
+    setQuestoesErradas(erros);
+    setQuestoesResolvidas(acertos + erros);
+  }, [acertosMarcados, errosMarcados]);
 
   // Ajustar erros automaticamente quando digita acertos/resolvidas
   const handleQuestoesAcertadasChange = (val: number) => {
@@ -217,9 +391,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   // --- ANÁLISE DE CICLOS INTEGRADA ---
   // Obter média de metas de acordo com o bloco do concurso TCU
   const obterMetaMateria = (m: Materia): number => {
-    const sigla = m.sigla;
-    if (['CEX', 'AFO', 'AUD'].includes(sigla)) return 85; 
-    return 80;
+    return m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
   };
 
   // Coleta histórico de logs ordenados cronologicamente (antigo para novo) do assunto selecionado
@@ -266,117 +438,140 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       {/* RENDER SUB ABA 1: FOCO ATIVO & CRONÔMETRO */}
       {subAba === 'timer' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-editorial-node" id="timer-mode-layout">
-          {/* Seção Cronômetro */}
-          <div className="lg:col-span-2 bg-[#0F172A] border border-[#1E293B] rounded p-6 shadow-sm flex flex-col justify-between space-y-6" id="active-study-timer-box">
+          
+          {/* Seção Principal (Bento Col: Trigger Card de Foco) */}
+          <div className="lg:col-span-2 flex flex-col">
             
-            <div className="flex justify-between items-start" id="timer-box-header">
-              <div className="space-y-2">
-                <span 
-                  className="text-[10px] font-mono font-black uppercase tracking-widest text-[#E2E8F0] px-2 py-1 rounded"
-                  style={{ backgroundColor: materiaAtiva?.cor || '#3b82f6' }}
-                >
-                  Matéria Atual do Ciclo: {materiaAtiva?.sigla || 'TCU'}
-                </span>
-                <h3 className="text-2xl font-display font-medium text-white mt-1">{materiaAtiva?.nome || 'Selecione uma matéria'}</h3>
-                <p className="text-xs text-[#94A3B8]">Meta recomendada de hoje: <strong className="text-[#C5A059]">{targetMinutos} minutos</strong> focados</p>
-              </div>
+            {/* Trigger Card de Foco */}
+            <div className="bg-[#0F172A] border border-[#1E293B] rounded p-6 shadow-sm flex flex-col justify-between space-y-6 flex-1 h-full" id="trigger-study-card">
               
-              <div className="flex space-x-1.5" id="cycle-navigation-actions">
-                <button 
-                  onClick={handleAnteriorItemCiclo}
-                  className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-3 py-1.5 rounded-sm text-xs font-medium border border-[#1E293B] transition-colors"
-                >
-                  ⬅️ Anterior
-                </button>
-                <button 
-                  onClick={handleProximoItemCiclo}
-                  className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-3 py-1.5 rounded-sm text-xs font-medium border border-[#1E293B] transition-colors"
-                >
-                  Próximo ➡️
-                </button>
-              </div>
-            </div>
-
-            {/* Escolha da Aula Ativa dO Estratégia */}
-            <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-4 space-y-3" id="lesson-linking-panel">
-              <label className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B] block">
-                Vincular estudo ao tópico do Estratégia Concursos:
-              </label>
-              <select 
-                value={aulaSelecionadaId} 
-                onChange={(e) => setAulaSelecionadaId(e.target.value)}
-                className="w-full bg-[#1E293B] border border-[#2D3748] rounded px-3 py-2 text-sm text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans transition-all"
-              >
-                {(materiaAtiva?.aulas || []).map(a => (
-                  <option key={a.id} value={a.id} className="bg-[#0F172A] text-[#E2E8F0]">
-                    Aula {a.numero.toString().padStart(2, '0')} - {a.titulo} ({a.status})
-                  </option>
-                ))}
-              </select>
-              <p className="text-[10px] text-[#64748B] flex items-center gap-1.5 leading-normal">
-                <BookOpen size={12} className="text-[#C5A059]" />
-                Ligar o timer a uma aula específica ajudará o sistema a recalcular seu índice de acertos e horas consolidadas por assunto estudado.
-              </p>
-            </div>
-
-            {/* mostrador Gigante do Tempo */}
-            <div className="flex flex-col items-center justify-center py-6 space-y-5" id="giant-clock-container">
-              <div className="flex space-x-1.5 bg-[#0C0E12] p-1 rounded border border-[#1E293B]" id="timer-mode-toggle">
-                <button
-                  type="button"
-                  onClick={() => handleToggleTimerMode(false)}
-                  className={`px-4 py-1.5 rounded-sm text-xs font-semibold tracking-wide transition-all ${!modoRegressivo ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:text-[#E2E8F0]'}`}
-                >
-                  Cronômetro livre
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleToggleTimerMode(true)}
-                  className={`px-4 py-1.5 rounded-sm text-xs font-semibold tracking-wide transition-all ${modoRegressivo ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:text-[#E2E8F0]'}`}
-                >
-                  Temporizador Alvo ({targetMinutos}m)
-                </button>
+              <div className="flex justify-between items-start" id="timer-box-header">
+                <div className="space-y-2">
+                  <span 
+                    className="text-[10px] font-mono font-black uppercase tracking-widest text-[#E2E8F0] px-2 py-1 rounded"
+                    style={{ backgroundColor: materiaAtiva?.cor || '#3b82f6' }}
+                  >
+                    Matéria Atual do Ciclo: {materiaAtiva?.sigla || 'TCU'}
+                  </span>
+                  <h3 className="text-2xl font-display font-medium text-white mt-1">{materiaAtiva?.nome || 'Selecione uma matéria'}</h3>
+                  <p className="text-xs text-[#94A3B8]">Meta recomendada de hoje: <strong className="text-[#C5A059]">{targetMinutos} minutos</strong> focados</p>
+                </div>
+                
+                <div className="flex space-x-1.5" id="cycle-navigation-actions">
+                  <button 
+                    onClick={handleAnteriorItemCiclo}
+                    className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-3 py-1.5 rounded-full text-xs font-semibold border border-[#1E293B] transition-colors cursor-pointer active:scale-[0.96]"
+                  >
+                    ⬅️ Anterior
+                  </button>
+                  <button 
+                    onClick={handleProximoItemCiclo}
+                    className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-3 py-1.5 rounded-full text-xs font-semibold border border-[#1E293B] transition-colors cursor-pointer active:scale-[0.96]"
+                  >
+                    Próximo ➡️
+                  </button>
+                </div>
               </div>
 
-              <h2 className="text-6xl sm:text-7xl font-bold font-mono tracking-widest text-[#C5A059] bg-[#0C0E12] px-10 py-6 rounded border border-[#1E293B] max-w-sm w-full text-center shadow-inner">
-                {formatarTempo(segundos)}
-              </h2>
+              {/* Escolha da Aula Ativa do Estratégia */}
+              <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-4 space-y-3" id="lesson-linking-panel">
+                <label className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B] block">
+                  Vincular estudo ao tópico do Estratégia Concursos:
+                </label>
+                <select 
+                  value={aulaSelecionadaId} 
+                  onChange={(e) => setAulaSelecionadaId(e.target.value)}
+                  className="w-full bg-[#1E293B] border border-[#2D3748] rounded px-3 py-2 text-sm text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans transition-all"
+                >
+                  {(materiaAtiva?.aulas || []).map(a => (
+                    <option key={a.id} value={a.id} className="bg-[#0F172A] text-[#E2E8F0]">
+                      Aula {a.numero.toString().padStart(2, '0')} - {a.titulo} ({a.status})
+                    </option>
+                  ))}
+                </select>
 
-              <div className="flex space-x-3.5 items-center" id="clock-trigger-actions">
+                {(() => {
+                  const aulaInfo = materiaAtiva?.aulas?.find(a => a.id === aulaSelecionadaId);
+                  if (!aulaInfo) return null;
+                  const qResolv = aulaInfo.questoesResolvidas || 0;
+                  const qAcert = aulaInfo.questoesAcertadas || 0;
+                  const qErr = aulaInfo.questoesErradas || 0;
+                  const pct = qResolv > 0 ? Math.round((qAcert / qResolv) * 100) : 0;
+                  const target = obterMetaMateria(materiaAtiva);
+
+                  return (
+                    <div className="bg-[#0F172A] p-3.5 rounded border border-[#1E293B] w-full space-y-2.5" id="selected-lesson-stats">
+                      {/* Última Sessão */}
+                      <div className="flex flex-col sm:flex-row sm:items-center text-xs font-mono gap-1.5 sm:gap-4 border-b border-[#1E293B]/50 pb-2.5">
+                        <span className="text-[#C5A059] font-bold sm:w-[130px] w-full shrink-0">Última Sessão:</span>
+                        {ultimoLog ? (
+                          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-4 flex-1">
+                            <span className="text-[#E2E8F0] bg-[#1E293B] px-1.5 py-0.5 rounded text-[10px] font-sans font-bold sm:w-[105px] w-auto text-center shrink-0">{ultimoLog.tipo}</span>
+                            {ultimoLog.questoesResolvidas > 0 ? (
+                              (() => {
+                                const pctUltimo = Math.round((ultimoLog.questoesAcertadas / ultimoLog.questoesResolvidas) * 100);
+                                return (
+                                  <>
+                                    <span className="text-white font-bold sm:w-[110px] w-auto shrink-0">{ultimoLog.questoesResolvidas} questões</span>
+                                    <span className="text-emerald-400 sm:w-[90px] w-auto shrink-0">{ultimoLog.questoesAcertadas} acertos</span>
+                                    <span className="text-rose-400 sm:w-[80px] w-auto shrink-0">{ultimoLog.questoesErradas} erros</span>
+                                    <span className={`font-bold flex-1 ${pctUltimo >= target ? 'text-emerald-400' : 'text-amber-500'}`}>
+                                      {pctUltimo}% aproveitamento
+                                    </span>
+                                  </>
+                                );
+                              })()
+                            ) : (
+                              <>
+                                <span className="text-slate-300 font-semibold sm:w-[110px] w-auto shrink-0">{ultimoLog.duracaoMinutos} min</span>
+                                <span className="text-[#64748B] italic flex-1">Nenhuma questão realizada nesta sessão</span>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[#64748B] italic">Você ainda não estudou esta aula.</span>
+                        )}
+                      </div>
+
+                      {/* Histórico Acumulado */}
+                      <div className="flex flex-col sm:flex-row sm:items-center text-xs font-mono gap-1.5 sm:gap-4 pt-0.5">
+                        <span className="text-[#64748B] font-bold sm:w-[130px] w-full shrink-0">Total Acumulado:</span>
+                        {qResolv > 0 ? (
+                          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-4 flex-1">
+                            <span className="text-[#64748B] bg-[#1E293B]/65 px-1.5 py-0.5 rounded text-[10px] font-sans font-bold sm:w-[105px] w-auto text-center shrink-0">Geral</span>
+                            <span className="text-white font-bold sm:w-[110px] w-auto shrink-0">{qResolv} questões</span>
+                            <span className="text-emerald-400 sm:w-[90px] w-auto shrink-0">{qAcert} acertos</span>
+                            <span className="text-rose-400 sm:w-[80px] w-auto shrink-0">{qErr} erros</span>
+                            <span className={`font-bold flex-1 ${pct >= target ? 'text-emerald-400' : 'text-amber-500'}`}>
+                              {pct}% aproveitamento (Meta: {target}%)
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[#64748B] italic">Nenhuma questão realizada nesta aula.</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <p className="text-[10px] text-[#64748B] flex items-center gap-1.5 leading-normal">
+                  <BookOpen size={12} className="text-[#C5A059]" />
+                  Ligar o timer a uma aula específica ajudará o sistema a recalcular seu índice de acertos e horas consolidadas por assunto estudado.
+                </p>
+              </div>
+
+              {/* Botão de Destaque Iniciar/Retomar Foco */}
+              <div className="flex justify-center pt-2">
                 <button
                   type="button"
-                  onClick={handleResetCronometro}
-                  className="p-3 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-rose-400 border border-[#1E293B] rounded-full transition-all"
-                  title="Zerar"
+                  onClick={() => setMostrarModalFoco(true)}
+                  className="w-full py-4 bg-[#C5A059] hover:bg-[#C5A059]/90 text-black font-extrabold rounded text-sm tracking-wider uppercase flex items-center justify-center gap-2.5 transition-all duration-300 hover:scale-[1.01] active:scale-[0.99] cursor-pointer shadow-lg shadow-[#C5A059]/10"
                 >
-                  <RotateCcw size={20} />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleTogglePlay}
-                  className={`px-8 py-3.5 rounded-full text-white font-extrabold flex items-center gap-2 transition-all hover:scale-[1.02] ${rodando ? 'bg-amber-600 hover:bg-amber-700' : 'bg-[#C5A059] hover:bg-[#C5A059]/90 text-black'}`}
-                >
-                  {rodando ? (
-                    <>
-                      <Pause size={18} /> Pausar Estudo
-                    </>
-                  ) : (
-                    <>
-                      <Play size={18} /> Iniciar Foco
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleConcluirSessaoEstudo}
-                  disabled={segundos === 0 && !modoRegressivo}
-                  className="px-5 py-3.5 bg-sky-600 hover:bg-sky-700 text-white rounded-full font-semibold text-sm flex items-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                >
-                  <CheckSquare size={16} /> Logar Estudo
+                  <Play size={16} fill="black" />
+                  {segundos > 0 || rodando ? 'Retomar Foco Ativo' : 'Iniciar Foco de Estudos'}
                 </button>
               </div>
+
             </div>
 
           </div>
@@ -472,11 +667,11 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
             <div className="bg-[#0F172A] border border-[#1E293B] p-5 rounded hover:border-[#C5A059]/30 transition-all">
               <span className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-widest block mb-1">Meta Regulatória TCU</span>
               <div className="flex items-baseline gap-2.5 mt-2">
-                <h3 className="text-3xl font-bold font-display text-emerald-400">80% - 85%</h3>
-                <span className="text-xs text-[#94A3B8] font-mono">de acertos FGV</span>
+                <h3 className="text-3xl font-bold font-display text-emerald-400">90% - 95%</h3>
+                <span className="text-xs text-[#94A3B8] font-mono">de acertos</span>
               </div>
               <p className="text-[11px] text-[#64748B] leading-relaxed mt-2 font-mono">
-                Nível mínimo recomendado para disputar o topo da classificação.
+                Nível mínimo recomendado para disputar o topo da classificação (ajustável por disciplina).
               </p>
             </div>
 
@@ -564,19 +759,37 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                   
                   {/* Ciclos de Estudo por Aula */}
                   <div className="bg-[#0C0E12] border border-[#1E293B] p-4 rounded">
-                    <h5 className="text-[10px] font-mono font-bold text-[#64748B] mb-3 uppercase tracking-wide">Ciclos de Estudo por Aula:</h5>
+                    <h5 className="text-[10px] font-mono font-bold text-[#64748B] mb-3 uppercase tracking-wide">Aproveitamento e Foco por Aula:</h5>
                     <div className="flex flex-wrap gap-1.5 max-h-[120px] overflow-y-auto pr-1 custom-scrollbar">
                       {materiaAnaliticaObjeto.aulas.map(aula => {
                         const contagemAula = logsMateriaAnalitica.filter(l => l.aulaId === aula.id).length;
+                        const qResolv = aula.questoesResolvidas || 0;
+                        const qAcert = aula.questoesAcertadas || 0;
+                        const qPct = qResolv > 0 ? Math.round((qAcert / qResolv) * 100) : 0;
+                        const target = obterMetaMateria(materiaAnaliticaObjeto);
+
+                        let performanceStyle = 'bg-[#1E293B]/20 border-[#1E293B] text-[#64748B]';
+                        if (qResolv > 0) {
+                          if (qPct >= target) {
+                            performanceStyle = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-bold';
+                          } else if (qPct >= 80) {
+                            performanceStyle = 'bg-[#C5A059]/10 border-[#C5A059]/30 text-[#C5A059] font-bold';
+                          } else {
+                            performanceStyle = 'bg-rose-500/10 border-rose-500/30 text-rose-400 font-bold';
+                          }
+                        } else if (contagemAula > 0) {
+                          performanceStyle = 'bg-[#1E293B]/40 border-[#2D3748] text-slate-300';
+                        }
+
                         return (
                           <div 
                             key={aula.id} 
-                            className={`text-[11px] font-mono px-2.5 py-1 rounded border flex items-center gap-1.5 transition-all ${contagemAula > 0 ? 'bg-[#C5A059]/10 border-[#C5A059]/30 text-[#C5A059]' : 'bg-[#1E293B]/20 border-[#1E293B] text-[#64748B]'}`}
-                            title={`${aula.titulo}: ${contagemAula} vezes estudada`}
+                            className={`text-[11px] font-mono px-2.5 py-1 rounded border flex items-center gap-1.5 transition-all ${performanceStyle}`}
+                            title={`${aula.titulo}: ${contagemAula}x estudada | ${qResolv} Q (${qPct}% acertos)`}
                           >
                             <span className="font-bold">A{aula.numero.toString().padStart(2, '0')}</span>
                             <span className="w-1 h-1 rounded-full bg-slate-700" />
-                            <span className="font-semibold">{contagemAula}x</span>
+                            <span className="font-semibold">{qResolv > 0 ? `${qPct}% (${qResolv}Q)` : `${contagemAula}x`}</span>
                           </div>
                         );
                       })}
@@ -647,7 +860,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                                 {hasQuestions ? `${accPerc}%` : '-'}
                               </td>
 
-                              {/* Estado Conforme Target FGV */}
+                              {/* Estado Conforme Target de Acertos */}
                               <td className="py-3 px-2">
                                 <div className="flex justify-center">
                                   {!hasQuestions ? (
@@ -704,7 +917,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                       })}
                     </div>
                     <p className="text-[10px] text-[#64748B] text-center italic leading-normal">
-                      Passe o mouse por cima das barras verticais para visualizar o índice de cada ciclo sequenciado deste assunto Estratégia TCU. Use essa tendência analítica para verificar se o seu aproveitamento de véspera da FGV está aumentando ou diminuindo!
+                      Passe o mouse por cima das barras verticais para visualizar o índice de cada ciclo sequenciado deste assunto Estratégia TCU. Use essa tendência analítica para verificar se o seu aproveitamento de véspera está aumentando ou diminuindo!
                     </p>
                   </div>
 
@@ -720,12 +933,12 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
       {/* 3. MODAL / DROPDOWN FORM PARA LOGAR SESSÃO DE ESTUDOS */}
       {mostrarFormLog && (
-        <div className="fixed inset-0 bg-[#0C0E12]/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in" id="study-session-log-modal">
+        <div className="fixed inset-0 bg-[#0C0E12]/80 backdrop-blur-sm flex items-center justify-center p-4 z-[60] animate-fade-in" id="study-session-log-modal">
           <div className="bg-[#0F172A] border border-[#1E293B] rounded w-full max-w-lg p-6 shadow-2xl relative">
             
             <h3 className="text-lg font-display font-medium text-white mb-2 flex items-center gap-2">
               <ListPlus size={20} className="text-[#C5A059]" />
-              Salvar Registro de Estudo (TCU Auditor)
+              Salvar Registro de Estudo
             </h3>
             <p className="text-xs text-[#94A3B8] mb-6 font-sans">
               Insira os dados da sua última sessão para manter o edital e taxas de erros atualizados.
@@ -733,6 +946,22 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
             <form onSubmit={handleSubmitSessao} className="space-y-4">
               
+              {/* Tópico / Aula Vinculada */}
+              <div>
+                <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Aula / Tópico do Estratégia</label>
+                <select
+                  value={aulaSelecionadaId}
+                  onChange={(e) => setAulaSelecionadaId(e.target.value)}
+                  className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2.5 text-xs text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans"
+                >
+                  {(materiaAtiva?.aulas || []).map(a => (
+                    <option key={a.id} value={a.id} className="bg-[#0F172A] text-[#E2E8F0]">
+                      Aula {a.numero.toString().padStart(2, '0')} - {a.titulo} ({a.status})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Matéria</label>
@@ -754,6 +983,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                     <option value="Vídeo" className="bg-[#0F172A]">Vídeoaula</option>
                     <option value="Questões" className="bg-[#0F172A]">Resolução de Questões</option>
                     <option value="Revisão" className="bg-[#0F172A]">Revisão Espaçada</option>
+                    <option value="Flashcards" className="bg-[#0F172A]">Flashcards</option>
                   </select>
                 </div>
               </div>
@@ -772,7 +1002,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
               {/* Seção das Questões */}
               <div className="bg-[#0C0E12] border border-[#1E293B] p-4 rounded space-y-3">
-                <h5 className="text-[10px] font-mono font-bold text-[#C5A059] uppercase tracking-widest block">Exercícios Resolvidos (FGV/Estratégia)</h5>
+                <h5 className="text-[10px] font-mono font-bold text-[#C5A059] uppercase tracking-widest block">Exercícios Resolvidos (Banca/Estratégia)</h5>
                 
                 <div className="grid grid-cols-3 gap-3">
                   <div>
@@ -836,10 +1066,361 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                   <CheckSquare size={14} /> Salvar e Avançar
                 </button>
               </div>
-
             </form>
           </div>
         </div>
+      )}
+
+      {/* 4. FOCUSED BACKDROP OVERLAY MODAL */}
+      {mostrarModalFoco && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6 bg-[#0C0E12]/85 backdrop-blur-md overflow-y-auto animate-fade-in" id="focused-modal-overlay">
+          
+          <div className="bg-[#0F172A] border border-[#1E293B] rounded-lg w-full md:w-[80%] max-w-6xl shadow-2xl overflow-hidden flex flex-col my-8" id="focused-modal-card">
+            
+            {/* Modal Header */}
+            <div className="border-b border-[#1E293B] px-6 py-4 flex justify-between items-center bg-[#0C0E12]/40">
+              <div className="flex items-center gap-2.5">
+                <span className="relative flex h-2 w-2">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 ${rodando ? '' : 'hidden'}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${rodando ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
+                </span>
+                <span className="text-xs font-mono font-bold text-[#64748B] uppercase tracking-wider">
+                  Modo Foco Ativo — {materiaAtiva?.nome}
+                </span>
+              </div>
+              
+              <button
+                type="button"
+                onClick={() => setMostrarModalFoco(false)}
+                className="text-[#64748B] hover:text-white transition-colors p-1.5 hover:bg-[#1E293B] rounded-full cursor-pointer flex items-center gap-1.5 text-xs font-semibold"
+                title="Minimizar (O timer continuará rodando em background)"
+              >
+                <span className="hidden sm:inline">Minimizar</span>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Modal Body: Grid 1:3 vertical stack */}
+            <div className="p-6 flex flex-col gap-6 overflow-y-auto max-h-[calc(100vh-120px)]" id="modal-body-stack">
+              
+              {/* Linha 1: Contexto (Esquerda) e Cronômetro (Direita) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="modal-row-context-timer">
+                
+                {/* Coluna Esquerda: Contexto */}
+                <div className="lg:col-span-6 bg-[#0C0E12] border border-[#1E293B] rounded p-5 space-y-4 flex flex-col justify-between" id="modal-col-lesson">
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-start">
+                      <div className="space-y-1">
+                        <span 
+                          className="text-[10px] font-mono font-black uppercase tracking-widest text-white px-2.5 py-0.5 rounded inline-block"
+                          style={{ backgroundColor: materiaAtiva?.cor || '#3b82f6' }}
+                        >
+                          {materiaAtiva?.sigla || 'TCU'}
+                        </span>
+                        <h3 className="text-lg font-display font-medium text-white">{materiaAtiva?.nome}</h3>
+                      </div>
+
+                      <div className="flex space-x-1.5" id="modal-cycle-navigation">
+                        <button 
+                          onClick={handleAnteriorItemCiclo}
+                          className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-2.5 py-1 rounded text-[11px] font-semibold border border-[#1E293B] transition-colors cursor-pointer active:scale-[0.96]"
+                        >
+                          ⬅️ Ant
+                        </button>
+                        <button 
+                          onClick={handleProximoItemCiclo}
+                          className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-2.5 py-1 rounded text-[11px] font-semibold border border-[#1E293B] transition-colors cursor-pointer active:scale-[0.96]"
+                        >
+                          Próx ➡️
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-[#1E293B]/50 pt-3 space-y-2">
+                      <label className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B] block">
+                        Tópico do Estratégia Concursos Vinculado:
+                      </label>
+                      <select 
+                        value={aulaSelecionadaId} 
+                        onChange={(e) => setAulaSelecionadaId(e.target.value)}
+                        className="w-full bg-[#1E293B] border border-[#2D3748] rounded px-3 py-2 text-sm text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans transition-all"
+                      >
+                        {(materiaAtiva?.aulas || []).map(a => (
+                          <option key={a.id} value={a.id} className="bg-[#0F172A] text-[#E2E8F0]">
+                            Aula {a.numero.toString().padStart(2, '0')} - {a.titulo} ({a.status})
+                          </option>
+                        ))}
+                      </select>
+
+                      {(() => {
+                        const aulaInfo = materiaAtiva?.aulas?.find(a => a.id === aulaSelecionadaId);
+                        if (!aulaInfo) return null;
+                        const qResolv = aulaInfo.questoesResolvidas || 0;
+                        const qAcert = aulaInfo.questoesAcertadas || 0;
+                        const qErr = aulaInfo.questoesErradas || 0;
+                        const pct = qResolv > 0 ? Math.round((qAcert / qResolv) * 100) : 0;
+                        const target = obterMetaMateria(materiaAtiva);
+
+                        return (
+                          <div className="bg-[#0F172A] p-3.5 rounded border border-[#1E293B] w-full space-y-2.5" id="modal-lesson-stats">
+                            {/* Sessão Anterior */}
+                            <div className="flex flex-col sm:flex-row sm:items-center text-xs font-mono gap-1.5 sm:gap-4 border-b border-[#1E293B]/50 pb-2.5">
+                              <span className="text-[#C5A059] font-bold sm:w-[130px] w-full shrink-0">Sessão Anterior:</span>
+                              {ultimoLog ? (
+                                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-4 flex-1">
+                                  <span className="text-[#E2E8F0] bg-[#1E293B] px-1.5 py-0.5 rounded text-[10px] font-sans font-bold sm:w-[105px] w-auto text-center shrink-0">{ultimoLog.tipo}</span>
+                                  {ultimoLog.questoesResolvidas > 0 ? (
+                                    (() => {
+                                      const pctUltimo = Math.round((ultimoLog.questoesAcertadas / ultimoLog.questoesResolvidas) * 100);
+                                      return (
+                                        <>
+                                          <span className="text-white font-bold sm:w-[110px] w-auto shrink-0">{ultimoLog.questoesResolvidas} questões</span>
+                                          <span className="text-emerald-400 sm:w-[90px] w-auto shrink-0">{ultimoLog.questoesAcertadas} acertos</span>
+                                          <span className="text-rose-400 sm:w-[80px] w-auto shrink-0">{ultimoLog.questoesErradas} erros</span>
+                                          <span className={`font-bold flex-1 ${pctUltimo >= target ? 'text-emerald-400' : 'text-amber-500'}`}>
+                                            {pctUltimo}% aproveitamento
+                                          </span>
+                                        </>
+                                      );
+                                    })()
+                                  ) : (
+                                    <>
+                                      <span className="text-slate-300 font-semibold sm:w-[110px] w-auto shrink-0">{ultimoLog.duracaoMinutos} min</span>
+                                      <span className="text-[#64748B] italic flex-1">Nenhuma questão realizada nesta sessão</span>
+                                    </>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-[#64748B] italic">Você ainda não estudou esta aula.</span>
+                              )}
+                            </div>
+
+                            {/* Histórico Acumulado */}
+                            <div className="flex flex-col sm:flex-row sm:items-center text-xs font-mono gap-1.5 sm:gap-4 pt-0.5">
+                              <span className="text-[#64748B] font-bold sm:w-[130px] w-full shrink-0">Total Acumulado:</span>
+                              {qResolv > 0 ? (
+                                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-4 flex-1">
+                                  <span className="text-[#64748B] bg-[#1E293B]/65 px-1.5 py-0.5 rounded text-[10px] font-sans font-bold sm:w-[105px] w-auto text-center shrink-0">Geral</span>
+                                  <span className="text-white font-bold sm:w-[110px] w-auto shrink-0">{qResolv} questões</span>
+                                  <span className="text-emerald-400 sm:w-[90px] w-auto shrink-0">{qAcert} acertos</span>
+                                  <span className="text-rose-400 sm:w-[80px] w-auto shrink-0">{qErr} erros</span>
+                                  <span className={`font-bold flex-1 ${pct >= target ? 'text-emerald-400' : 'text-amber-500'}`}>
+                                    {pct}% aproveitamento (Meta: {target}%)
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-[#64748B] italic">Nenhuma questão realizada nesta aula.</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Coluna Direita: Tempo / Cronômetro */}
+                <div className="lg:col-span-6 bg-[#0C0E12] border border-[#1E293B] rounded p-5 flex flex-col items-center justify-between space-y-4" id="modal-row-timer">
+                  
+                  <div className="flex space-x-1 bg-[#0F172A] p-1 rounded-full border border-[#1E293B]" id="modal-timer-mode-toggle">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleTimerMode(false)}
+                      className={`px-4 py-1.5 rounded-full text-[11px] font-semibold tracking-wide transition-all cursor-pointer ${!modoRegressivo ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:text-[#E2E8F0]'}`}
+                    >
+                      Cronômetro Livre
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleTimerMode(true)}
+                      className={`px-4 py-1.5 rounded-full text-[11px] font-semibold tracking-wide transition-all cursor-pointer ${modoRegressivo ? 'bg-[#1E293B] text-white' : 'text-[#64748B] hover:text-[#E2E8F0]'}`}
+                    >
+                      Temporizador Alvo ({targetMinutos}m)
+                    </button>
+                  </div>
+
+                  <h2 className="text-4xl sm:text-5xl font-bold font-mono tracking-widest text-[#C5A059] bg-[#0F172A] py-3 rounded border border-[#1E293B] w-full text-center shadow-inner max-w-sm">
+                    {formatarTempo(segundos)}
+                  </h2>
+
+                  <div className="flex space-x-3 w-full items-center justify-center max-w-md" id="modal-clock-actions">
+                    <button
+                      type="button"
+                      onClick={handleResetCronometro}
+                      className="p-3 bg-[#1E293B]/60 hover:bg-[#1E293B] text-[#94A3B8] hover:text-rose-400 border border-[#2D3748] rounded-full transition-all cursor-pointer active:scale-[0.95]"
+                      title="Zerar"
+                    >
+                      <RotateCcw size={16} />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleTogglePlay}
+                      className={`flex-1 py-3 rounded-full text-black font-extrabold flex items-center justify-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer shadow-lg shadow-[#C5A059]/10 text-xs uppercase tracking-wider ${rodando ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-[#C5A059] hover:bg-[#C5A059]/90'}`}
+                    >
+                      {rodando ? (
+                        <>
+                          <Pause size={14} /> Pausar Foco
+                        </>
+                      ) : (
+                        <>
+                          <Play size={14} /> Iniciar Foco
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleConcluirSessaoEstudo}
+                      disabled={segundos === 0 && !modoRegressivo}
+                      className="px-4 py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-full font-bold text-xs flex items-center justify-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed transition-all cursor-pointer active:scale-[0.98] shadow-lg shadow-sky-600/10 uppercase tracking-wider"
+                    >
+                      <CheckSquare size={14} /> Salvar Estudos
+                    </button>
+                  </div>
+
+                  {/* Horários de Início e Fim */}
+                  <div className="flex gap-4 justify-center text-[10px] font-mono text-[#94A3B8] w-full max-w-xs pt-1" id="modal-timer-timestamps">
+                    <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#1E293B] px-3 py-1 rounded text-slate-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Início: <strong className="text-white">{horaInicio || '--:--:--'}</strong>
+                    </span>
+                    <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#1E293B] px-3 py-1 rounded text-slate-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                      Pausa: <strong className="text-white">{horaFim || '--:--:--'}</strong>
+                    </span>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Linha 2: Gabarito de Exercícios (Empilhados Verticalmente Sem Rolagem) */}
+              <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-5 space-y-4" id="modal-row-gabarito">
+                
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <h4 className="text-sm font-display font-medium text-white flex items-center gap-2">
+                      <CheckSquare size={16} className="text-[#C5A059]" />
+                      Gabarito em Tempo Real
+                    </h4>
+                    <p className="text-[11px] text-[#64748B]">
+                      Registre acertos/erros durante a resolução. Todos os botões visíveis de uma vez.
+                    </p>
+                  </div>
+                  
+                  <div className="flex gap-1.5 w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
+                      onClick={handleToggleLimiteQuestoes}
+                      className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#C5A059] px-2.5 py-1.5 rounded text-[10px] font-bold font-mono border border-[#1E293B] transition-colors cursor-pointer"
+                    >
+                      Limite: {limiteQuestoes} Q
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearGabarito}
+                      className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-rose-400 px-2.5 py-1.5 rounded text-[10px] font-bold font-mono border border-[#1E293B] transition-colors cursor-pointer"
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+
+                {/* Painéis de Acertos e Erros empilhados verticalmente e sem rolagem interna */}
+                <div className="flex flex-col gap-4">
+                  
+                  {/* Questões Certas */}
+                  <div className="bg-[#0F172A] border border-[#1E293B] p-4 rounded space-y-3">
+                    <div className="flex justify-between items-center border-b border-[#1E293B]/50 pb-2">
+                      <span className="text-[11px] font-mono font-bold text-emerald-400 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                        Acertos
+                      </span>
+                      <span className="font-mono text-xs font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded-full">
+                        {acertosMarcados.length}
+                      </span>
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-1.5 pr-1">
+                      {Array.from({ length: limiteQuestoes }, (_, i) => i + 1).map(num => {
+                        const isActive = acertosMarcados.includes(num);
+                        return (
+                          <button
+                            key={`acerto-modal-${num}`}
+                            type="button"
+                            onClick={() => handleToggleAcerto(num)}
+                            className={`w-8 h-8 rounded-full text-[10px] font-mono font-bold transition-all flex items-center justify-center border cursor-pointer ${
+                              isActive
+                                ? 'bg-emerald-500 text-black border-emerald-400 shadow-md shadow-emerald-500/15 font-black scale-105'
+                                : 'bg-[#0C0E12] text-[#64748B] border-[#1E293B] hover:border-emerald-500/30 hover:text-emerald-400 hover:scale-[1.05]'
+                            }`}
+                          >
+                            {num}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Questões Erradas */}
+                  <div className="bg-[#0F172A] border border-[#1E293B] p-4 rounded space-y-3">
+                    <div className="flex justify-between items-center border-b border-[#1E293B]/50 pb-2">
+                      <span className="text-[11px] font-mono font-bold text-rose-400 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-500" />
+                        Erros
+                      </span>
+                      <span className="font-mono text-xs font-bold text-rose-400 bg-rose-500/10 border border-rose-500/25 px-2 py-0.5 rounded-full">
+                        {errosMarcados.length}
+                      </span>
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-1.5 pr-1">
+                      {Array.from({ length: limiteQuestoes }, (_, i) => i + 1).map(num => {
+                        const isActive = errosMarcados.includes(num);
+                        return (
+                          <button
+                            key={`erro-modal-${num}`}
+                            type="button"
+                            onClick={() => handleToggleErro(num)}
+                            className={`w-8 h-8 rounded-full text-[10px] font-mono font-bold transition-all flex items-center justify-center border cursor-pointer ${
+                              isActive
+                                ? 'bg-rose-500 text-white border-rose-400 shadow-md shadow-rose-500/15 font-black scale-105'
+                                : 'bg-[#0C0E12] text-[#64748B] border-[#1E293B] hover:border-rose-500/30 hover:text-rose-400 hover:scale-[1.05]'
+                            }`}
+                          >
+                            {num}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* 5. PÍLULA FLUTUANTE DE FOCO ATIVO (MINIMIZADO) */}
+      {!mostrarModalFoco && (rodando || segundos > 0) && (
+        <button
+          type="button"
+          onClick={() => setMostrarModalFoco(true)}
+          className="fixed bottom-6 right-6 z-40 bg-[#0F172A] border border-[#C5A059]/40 hover:border-[#C5A059] text-white px-5 py-3 rounded-full shadow-xl shadow-[#C5A059]/10 flex items-center gap-2.5 transition-all duration-300 hover:scale-105 active:scale-95 group"
+        >
+          <span className="relative flex h-3 w-3">
+            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-[#C5A059] opacity-75 ${rodando ? '' : 'hidden'}`}></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-[#C5A059]"></span>
+          </span>
+          <span className="font-mono text-sm font-bold text-[#E2E8F0] tracking-wider">
+            ⚡ Foco Ativo: <span className="text-[#C5A059]">{formatarTempo(segundos)}</span>
+          </span>
+        </button>
       )}
 
     </div>

@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { createClient } from '@supabase/supabase-js';
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -9,6 +10,10 @@ const ai = new GoogleGenAI({
   }
 });
 
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
 export default async function handler(req: any, res: any) {
   // Configurando CORS básico para segurança
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -16,7 +21,7 @@ export default async function handler(req: any, res: any) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
   );
 
   if (req.method === 'OPTIONS') {
@@ -28,7 +33,18 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ success: false, error: 'Método não permitido' });
   }
 
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Acesso não autorizado. Token de sessão ausente.' });
+  }
+  const token = authHeader.split(' ')[1];
+
   try {
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      return res.status(401).json({ success: false, error: 'Acesso não autorizado. Sessão inválida ou expirada.' });
+    }
+
     const { materias, simulados, historico, totalHoras, totalQuestoes, totalAcertos } = req.body;
 
     if (!process.env.GEMINI_API_KEY) {
@@ -48,9 +64,17 @@ export default async function handler(req: any, res: any) {
         totQuestoes += (a.questoesResolvidas || 0);
         totAcertos += (a.questoesAcertadas || 0);
       });
-      const taxaAcerto = totQuestoes > 0 ? Math.round((totAcertos / totQuestoes) * 100) : 0;
 
-      return `- **${m.nome} (${m.sigla})**: ${concluidas}/${m.aulas.length} aulas concluídas. ${emProgresso} em progresso. Questões resolvidas: ${totQuestoes}, Acerto: ${taxaAcerto}%`;
+      const histMateria = (historico || []).filter((h: any) => h.materiaId === m.id);
+      const mQuestHist = histMateria.reduce((acc: number, curr: any) => acc + (curr.questoesResolvidas || 0), 0);
+      const mAcertHist = histMateria.reduce((acc: number, curr: any) => acc + (curr.questoesAcertadas || 0), 0);
+
+      const finalQuestoes = Math.max(totQuestoes, mQuestHist);
+      const finalAcertos = Math.max(totAcertos, mAcertHist);
+      const taxaAcerto = finalQuestoes > 0 ? Math.round((finalAcertos / finalQuestoes) * 100) : 0;
+      const meta = m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
+
+      return `- **${m.nome} (${m.sigla})**: ${concluidas}/${m.aulas.length} aulas concluídas. ${emProgresso} em progresso. Questões resolvidas: ${finalQuestoes}, Acerto: ${taxaAcerto}% (Meta Configurada: ${meta}%)`;
     }).join("\n");
 
     const simuladosResumo = simulados && simulados.length > 0
@@ -82,7 +106,7 @@ ${historicoResumo}
 Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag indicados abaixo. Não coloque nenhum texto fora delas:
 
 [DIAGNOSTICO_GERAL]
-(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 80-85% pela banca FGV para o TCU.)
+(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 90-95% (ou conforme metas configuradas por matéria) exigido para o TCU.)
 
 [ALERTA_FRAQUEZA]
 (Identifique e disserte sobre as matérias com pior desempenho ou inércia de estudos, alertando sobre o risco estatístico destas no edital do TCU.)

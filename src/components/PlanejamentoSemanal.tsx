@@ -57,7 +57,7 @@ const DIAS_NOMES = [
 export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdicionarLog }: PlanejamentoProps) {
   // Configuração inicial com localStorage ou padrões inteligentes
   const [config, setConfig] = useState<PlanejamentoConfig>(() => {
-    const saved = localStorage.getItem('tcu_planejamento_semanal');
+    const saved = localStorage.getItem('superestrategico_planejamento_semanal');
     
     // Padrões iniciais de pesos
     const pesosIniciais: { [materiaId: string]: number } = {};
@@ -127,7 +127,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
 
   // Salvar configurações sempre que houver mudanças
   useEffect(() => {
-    localStorage.setItem('tcu_planejamento_semanal', JSON.stringify(config));
+    localStorage.setItem('superestrategico_planejamento_semanal', JSON.stringify(config));
   }, [config]);
 
   // Estados locais para interatividades
@@ -136,7 +136,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
   const [numAcertos, setNumAcertos] = useState(0);
   const [numErros, setNumErros] = useState(0);
   const [tempoMinutosLog, setTempoMinutosLog] = useState(90);
-  const [tipoEstudoLog, setTipoEstudoLog] = useState<'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão'>('Teoria (PDF)');
+  const [tipoEstudoLog, setTipoEstudoLog] = useState<'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards'>('Teoria (PDF)');
   const [mensagemSucesso, setMensagemSucesso] = useState('');
   // Estado para edição inline de horas manuais (materiaId -> valor digitado em minutos/sem)
   const [editandoMinutos, setEditandoMinutos] = useState<{ [materiaId: string]: string }>({});
@@ -705,7 +705,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
                 <span>Peso (De 1 a 5)</span>
               </div>
 
-              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 select-none" id="materias-weight-list">
+              <div className="space-y-2 select-none" id="materias-weight-list">
                 {materias.map(m => {
                   const ativa = config.materiasAtivas.includes(m.id);
                   const peso = config.pesoMaterias[m.id] || 3;
@@ -799,7 +799,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
                   <span className="text-right pr-1">Tempo Semana / Dia</span>
                 </div>
 
-                <div className="space-y-2.5 max-h-[310px] overflow-y-auto pr-1 pt-1">
+                <div className="space-y-2.5 pr-1 pt-1">
                   {materiasComTempo.map(mc => {
                     const isEdit = editandoMinutos[mc.materia.id] !== undefined;
                     const isFlash = flashOK[mc.materia.id];
@@ -1204,6 +1204,7 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
                     <option value="Vídeo">Vídeo Aula</option>
                     <option value="Questões">Questões de Fixação</option>
                     <option value="Revisão">Revisão Periódica</option>
+                    <option value="Flashcards">Flashcards</option>
                   </select>
                 </div>
               </div>
