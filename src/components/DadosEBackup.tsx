@@ -146,50 +146,61 @@ export default function DadosEBackup({
     setTestMessage('Iniciando comunicação com o Google AI Studio...');
     
     try {
-      let model = 'gemini-3.5-flash';
-      let response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey.trim()}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Diga "Ok" se estiver funcionando.' }] }]
-        })
-      });
-      
-      let data = await response.json().catch(() => ({}));
-      let originalError = !response.ok ? (data.error?.message || `Erro HTTP ${response.status}`) : null;
-      
-      // Se der erro de sobrecarga ou cota do modelo (429/503 ou mensagem de overload), tenta o fallback para gemini-1.5-flash
-      if (!response.ok && (response.status === 429 || response.status === 503 || data.error?.message?.toLowerCase().includes('demand') || data.error?.message?.toLowerCase().includes('overload'))) {
-        model = 'gemini-1.5-flash';
-        setTestMessage(`Modelo principal ocupado. Tentando fallback para ${model}...`);
-        
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey.trim()}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: 'Diga "Ok" se estiver funcionando.' }] }]
-          })
-        });
-        
-        data = await response.json();
+      const modelsToTry = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.1-flash-lite'];
+      let response: Response | null = null;
+      let data: any = {};
+      let lastError = '';
+      let usedModel = '';
+
+      for (const currentModel of modelsToTry) {
+        try {
+          usedModel = currentModel;
+          setTestMessage(`Testando conexão via ${currentModel}...`);
+          
+          response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${geminiApiKey.trim()}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: 'Diga "Ok" se estiver funcionando.' }] }]
+            })
+          });
+          
+          data = await response.json().catch(() => ({}));
+          
+          if (response.ok) {
+            lastError = '';
+            break;
+          } else {
+            lastError = data.error?.message || `Erro HTTP ${response.status}`;
+            console.warn(`Falha no teste com o modelo ${currentModel}: ${lastError}`);
+            
+            if (response.status === 400 || response.status === 403 || lastError.toLowerCase().includes('key') || lastError.toLowerCase().includes('invalid')) {
+              break;
+            }
+          }
+        } catch (fetchErr: any) {
+          lastError = fetchErr.message || 'Erro de rede';
+          console.warn(`Erro de rede no teste com o modelo ${currentModel}: ${lastError}`);
+        }
       }
-      
-      if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+
+      if (response && response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
         setTestStatus('success');
-        setTestMessage(`Conexão ativa! O Gemini (${model}) respondeu com sucesso.`);
+        setTestMessage(`Conexão ativa! O Gemini (${usedModel}) respondeu com sucesso.`);
       } else {
-        const errorMsg = data.error?.message || 'Erro desconhecido retornado pela API do Gemini.';
-        const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
+        const errorMsg = lastError || 'Erro desconhecido retornado pela API do Gemini.';
+        const isQuota = (response && response.status === 429) || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
+        const isHighDemand = (response && response.status === 503) || errorMsg.toLowerCase().includes('demand') || errorMsg.toLowerCase().includes('overload') || errorMsg.toLowerCase().includes('busy');
         
         setTestStatus('error');
         if (isQuota) {
-          setTestMessage(`Falha: Limite de cota ou taxa de requisições excedido no Google AI Studio (Erro 429). Se estiver usando a chave gratuita, aguarde 1 minuto ou mude para o plano Pay-as-you-go no AI Studio.`);
+          setTestMessage(`Falha: Limite de cota excedido no Google AI Studio (Erro 429). Se estiver usando a chave gratuita, aguarde 1 minuto ou ative o faturamento (Pay-as-you-go).`);
+        } else if (isHighDemand) {
+          setTestMessage(`Falha: Servidores do Gemini sob alta demanda (Erro 503). Tente novamente em alguns instantes.`);
         } else {
-          setTestMessage(`Falha: ${originalError || errorMsg}`);
+          setTestMessage(`Falha: ${errorMsg}`);
         }
       }
     } catch (e: any) {

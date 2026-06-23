@@ -301,7 +301,6 @@ E explique detalhadamente abaixo da tabela as alterações e o raciocínio por t
 TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” de cada apontamento, usando exemplos práticos. Ao final da redação (dentro do PLANO_ESTUDO), pergunte se o aluno deseja aprofundar algum ponto, tirar dúvidas sobre a reescrita ou receber um novo tema simulado para praticar.`;
 
     try {
-      let model = 'gemini-3.5-flash';
       const safetySettings = [
         {
           category: 'HARM_CATEGORY_HARASSMENT',
@@ -321,48 +320,62 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
         }
       ];
 
-      let response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${userApiKey}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          safetySettings
-        })
-      });
+      const modelsToTry = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.1-flash-lite'];
+      let response: Response | null = null;
+      let data: any = {};
+      let lastError = '';
+      let usedModel = '';
 
-      let data = await response.json().catch(() => ({}));
-      let originalError = !response.ok ? (data.error?.message || `Erro HTTP ${response.status}`) : null;
-
-      // Fallback para gemini-1.5-flash caso falhe por cota ou overload
-      if (!response.ok && (response.status === 429 || response.status === 503 || data.error?.message?.toLowerCase().includes('demand') || data.error?.message?.toLowerCase().includes('overload'))) {
-        model = 'gemini-1.5-flash';
-        setLoadingMessage(`Modelo principal ocupado. Usando fallback para ${model}...`);
-        
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${userApiKey}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            safetySettings
-          })
-        });
-        
-        data = await response.json().catch(() => ({}));
+      for (const currentModel of modelsToTry) {
+        try {
+          usedModel = currentModel;
+          setLoadingMessage(`Enviando redação para correção (${currentModel})...`);
+          
+          response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${userApiKey}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              safetySettings
+            })
+          });
+          
+          data = await response.json().catch(() => ({}));
+          
+          if (response.ok) {
+            lastError = '';
+            break;
+          } else {
+            lastError = data.error?.message || `Erro HTTP ${response.status}`;
+            console.warn(`Falha ao usar o modelo ${currentModel}: ${lastError}`);
+            
+            // Erros de autenticação de chave (400, 403, etc.) indicam que tentar outros modelos não ajudará
+            if (response.status === 400 || response.status === 403 || lastError.toLowerCase().includes('key') || lastError.toLowerCase().includes('invalid')) {
+              break;
+            }
+          }
+        } catch (fetchErr: any) {
+          lastError = fetchErr.message || 'Erro de rede';
+          console.warn(`Erro de rede ao usar o modelo ${currentModel}: ${lastError}`);
+        }
       }
 
-      if (!response.ok) {
-        const errorMsg = data.error?.message || `Erro HTTP ${response.status}`;
-        const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
+      if (!response || !response.ok) {
+        const errorMsg = lastError || 'Erro desconhecido ao se comunicar com a API do Gemini';
+        const isQuota = (response && response.status === 429) || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
+        const isHighDemand = (response && response.status === 503) || errorMsg.toLowerCase().includes('demand') || errorMsg.toLowerCase().includes('overload') || errorMsg.toLowerCase().includes('busy');
         
         if (isQuota) {
-          throw new Error(`Limite de cota ou taxa de requisições excedido no Google AI Studio (Erro 429). Se você está usando uma chave gratuita do Gemini, aguarde cerca de 1 minuto antes de tentar novamente, ou considere ativar o faturamento (Pay-as-you-go) no seu painel do Google AI Studio para obter limites muito maiores.`);
+          throw new Error(`Limite de cota excedido no Google AI Studio (Erro 429). Se você está usando uma chave gratuita do Gemini, por favor aguarde cerca de 1 minuto antes de tentar novamente, ou ative o faturamento (Pay-as-you-go) no seu painel para obter limites maiores.`);
         }
         
-        throw new Error(originalError || errorMsg);
+        if (isHighDemand) {
+          throw new Error(`Os servidores do Gemini estão sob alta demanda neste momento. Por favor, aguarde alguns instantes e tente novamente.`);
+        }
+        
+        throw new Error(errorMsg);
       }
 
       const candidate = data.candidates?.[0];
