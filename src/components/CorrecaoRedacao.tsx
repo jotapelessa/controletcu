@@ -333,11 +333,12 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
       });
 
       let data = await response.json().catch(() => ({}));
+      let originalError = !response.ok ? (data.error?.message || `Erro HTTP ${response.status}`) : null;
 
-      // Fallback para gemini-pro-latest caso falhe por cota ou overload
+      // Fallback para gemini-1.5-flash caso falhe por cota ou overload
       if (!response.ok && (response.status === 429 || response.status === 503 || data.error?.message?.toLowerCase().includes('demand') || data.error?.message?.toLowerCase().includes('overload'))) {
-        model = 'gemini-pro-latest';
-        setLoadingMessage(`Modelo com alta demanda. Usando fallback para ${model}...`);
+        model = 'gemini-1.5-flash';
+        setLoadingMessage(`Modelo principal ocupado. Usando fallback para ${model}...`);
         
         response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${userApiKey}`, {
           method: 'POST',
@@ -354,7 +355,14 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
       }
 
       if (!response.ok) {
-        throw new Error(data.error?.message || `Erro HTTP ${response.status}`);
+        const errorMsg = data.error?.message || `Erro HTTP ${response.status}`;
+        const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
+        
+        if (isQuota) {
+          throw new Error(`Limite de cota ou taxa de requisições excedido no Google AI Studio (Erro 429). Se você está usando uma chave gratuita do Gemini, aguarde cerca de 1 minuto antes de tentar novamente, ou considere ativar o faturamento (Pay-as-you-go) no seu painel do Google AI Studio para obter limites muito maiores.`);
+        }
+        
+        throw new Error(originalError || errorMsg);
       }
 
       const candidate = data.candidates?.[0];

@@ -157,12 +157,13 @@ export default function DadosEBackup({
         })
       });
       
-      let data = await response.json();
+      let data = await response.json().catch(() => ({}));
+      let originalError = !response.ok ? (data.error?.message || `Erro HTTP ${response.status}`) : null;
       
-      // Se der erro de sobrecarga ou cota do modelo (429/503 ou mensagem de overload), tenta o fallback para gemini-3.5-flash
+      // Se der erro de sobrecarga ou cota do modelo (429/503 ou mensagem de overload), tenta o fallback para gemini-1.5-flash
       if (!response.ok && (response.status === 429 || response.status === 503 || data.error?.message?.toLowerCase().includes('demand') || data.error?.message?.toLowerCase().includes('overload'))) {
-        model = 'gemini-pro-latest';
-        setTestMessage(`gemini ocupado. Tentando fallback para ${model}...`);
+        model = 'gemini-1.5-flash';
+        setTestMessage(`Modelo principal ocupado. Tentando fallback para ${model}...`);
         
         response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey.trim()}`, {
           method: 'POST',
@@ -182,8 +183,14 @@ export default function DadosEBackup({
         setTestMessage(`Conexão ativa! O Gemini (${model}) respondeu com sucesso.`);
       } else {
         const errorMsg = data.error?.message || 'Erro desconhecido retornado pela API do Gemini.';
+        const isQuota = response.status === 429 || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
+        
         setTestStatus('error');
-        setTestMessage(`Falha: ${errorMsg}`);
+        if (isQuota) {
+          setTestMessage(`Falha: Limite de cota ou taxa de requisições excedido no Google AI Studio (Erro 429). Se estiver usando a chave gratuita, aguarde 1 minuto ou mude para o plano Pay-as-you-go no AI Studio.`);
+        } else {
+          setTestMessage(`Falha: ${originalError || errorMsg}`);
+        }
       }
     } catch (e: any) {
       setTestStatus('error');
