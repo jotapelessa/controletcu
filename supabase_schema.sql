@@ -196,7 +196,38 @@ CREATE POLICY "admin_write_cms" ON public.cms_settings
     WITH CHECK (public.check_is_super_admin(auth.uid()) = true);
 
 -- =========================================================================
--- 6. Habilitar Realtime (execute apenas uma vez, comente se já foi feito)
+-- 6. redacoes_corrigidas — Histórico de redações corrigidas com IA
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS public.redacoes_corrigidas (
+    id TEXT PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    concurso TEXT,
+    banca TEXT,
+    tipo TEXT,
+    tema TEXT,
+    texto TEXT,
+    nota_global TEXT,
+    correcao_raw TEXT
+);
+
+ALTER TABLE public.redacoes_corrigidas ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "select_own_redacoes" ON public.redacoes_corrigidas;
+DROP POLICY IF EXISTS "insert_own_redacoes" ON public.redacoes_corrigidas;
+DROP POLICY IF EXISTS "delete_own_redacoes" ON public.redacoes_corrigidas;
+
+CREATE POLICY "select_own_redacoes" ON public.redacoes_corrigidas
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+
+CREATE POLICY "insert_own_redacoes" ON public.redacoes_corrigidas
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "delete_own_redacoes" ON public.redacoes_corrigidas
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- =========================================================================
+-- 7. Habilitar Realtime (execute apenas uma vez, comente se já foi feito)
 -- =========================================================================
 -- ALTER PUBLICATION supabase_realtime ADD TABLE public.user_data_sync;
 -- ALTER PUBLICATION supabase_realtime ADD TABLE public.historico_logs;

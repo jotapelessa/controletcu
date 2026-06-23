@@ -94,3 +94,15 @@ export interface EstatisticasGerais {
   totalAcertos: number;
   totalErros: number;
 }
+
+export interface RedacaoCorrigida {
+  id: string;
+  dataCriacao: string; // ISO string
+  concurso: string;
+  banca: string;
+  tipo: string;
+  tema: string;
+  texto: string;
+  notaGlobal: string; // Ex: "15 / 20"
+  correcaoRaw: string; // The full markdown response from Gemini with tags
+}

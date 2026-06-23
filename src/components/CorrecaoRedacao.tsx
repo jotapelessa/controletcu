@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, RefreshCcw, AlertTriangle, Send, Copy, Trash2, PenTool, FileText, CheckCircle, HelpCircle, Award, BookOpen, Check, Printer } from 'lucide-react';
+import { Sparkles, RefreshCcw, AlertTriangle, Send, Copy, Trash2, PenTool, FileText, CheckCircle, HelpCircle, Award, BookOpen, Check, Printer, ChevronLeft, ChevronRight } from 'lucide-react';
+import { RedacaoCorrigida } from '../types';
+import { obterHistoricoRedacoes, adicionarRedacaoAoHistorico, removerRedacaoDoHistorico } from '../utils/redacaoService';
 
 interface CorrecaoEstruturada {
   dados: string;
@@ -43,11 +45,22 @@ export default function CorrecaoRedacao() {
     return localStorage.getItem('superestrategico_redacao_recente') || null;
   });
 
+  // Histórico de redações corrigidas
+  const [redacoesHistorico, setRedacoesHistorico] = useState<RedacaoCorrigida[]>([]);
+  const [redacaoSelecionadaId, setRedacaoSelecionadaId] = useState<string | null>(null);
+  const [sidebarAberta, setSidebarAberta] = useState(true);
+
   // Aba ativa dentro da visualização da correção
   const [abaResultadoAtiva, setAbaResultadoAtiva] = useState<'nota' | 'comentada' | 'estrutura' | 'gramatica' | 'reescrita' | 'plano' | 'completo'>('nota');
 
-  // Carrega as configurações salvas no localStorage
+  // Carrega as configurações e o histórico salvas no localStorage/Supabase
   useEffect(() => {
+    async function carregarHistorico() {
+      const historico = await obterHistoricoRedacoes();
+      setRedacoesHistorico(historico);
+    }
+    carregarHistorico();
+
     const savedKey = localStorage.getItem('superestrategico_user_gemini_api_key');
     if (savedKey && savedKey.trim() !== '') {
       setApiKey(savedKey);
@@ -385,6 +398,24 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
         setCorrecaoRaw(resultText);
         localStorage.setItem('superestrategico_redacao_recente', resultText);
         setAbaResultadoAtiva('nota');
+
+        // Adiciona ao histórico de redações
+        const parsed = parseCorrecao(resultText);
+        const notaStr = parsed ? parsed.notaGlobal : '';
+        const novaRedacao = {
+          id: Date.now().toString(),
+          concurso: concurso || 'Nível Superior',
+          banca: banca || 'CESPE',
+          tipo: tipo || 'Dissertação',
+          tema: tema || 'Tema Geral',
+          texto: texto,
+          notaGlobal: notaStr || 'Sem nota',
+          correcaoRaw: resultText
+        };
+        adicionarRedacaoAoHistorico(novaRedacao).then((salva) => {
+          setRedacoesHistorico(prev => [salva, ...prev.filter(x => x.id !== salva.id)]);
+          setRedacaoSelecionadaId(salva.id);
+        });
       } else {
         if (candidate) {
           const reason = candidate.finishReason;
@@ -413,11 +444,60 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
     alert('Relatório completo em Markdown copiado!');
   };
 
+  const handleSelecionarRedacao = (redacao: RedacaoCorrigida) => {
+    setRedacaoSelecionadaId(redacao.id);
+    setCorrecaoRaw(redacao.correcaoRaw);
+    setConcurso(redacao.concurso);
+    setBanca(redacao.banca);
+    setTipo(redacao.tipo);
+    setTema(redacao.tema);
+    setTexto(redacao.texto);
+    setAbaResultadoAtiva('nota');
+    setDestaqueSelecionado(null);
+  };
+
+  const handleNovaCorrecao = () => {
+    setRedacaoSelecionadaId(null);
+    setCorrecaoRaw(null);
+    setConcurso('');
+    setBanca('');
+    setTipo('');
+    setTema('');
+    setTexto('');
+    setDestaqueSelecionado(null);
+    localStorage.removeItem('superestrategico_redacao_recente');
+  };
+
+  const handleDeletarHistorico = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm('Deseja realmente apagar esta correção do seu histórico?')) {
+      await removerRedacaoDoHistorico(id);
+      setRedacoesHistorico(prev => prev.filter(x => x.id !== id));
+      if (redacaoSelecionadaId === id) {
+        setRedacaoSelecionadaId(null);
+        setCorrecaoRaw(null);
+        localStorage.removeItem('superestrategico_redacao_recente');
+      }
+    }
+  };
+
   const handleDeletarCorrecao = () => {
-    if (confirm('Deseja realmente apagar esta correção salva?')) {
-      setCorrecaoRaw(null);
-      setDestaqueSelecionado(null);
-      localStorage.removeItem('superestrategico_redacao_recente');
+    if (redacaoSelecionadaId) {
+      if (confirm('Deseja realmente apagar esta correção salva?')) {
+        removerRedacaoDoHistorico(redacaoSelecionadaId).then(() => {
+          setRedacoesHistorico(prev => prev.filter(x => x.id !== redacaoSelecionadaId));
+          setRedacaoSelecionadaId(null);
+          setCorrecaoRaw(null);
+          setDestaqueSelecionado(null);
+          localStorage.removeItem('superestrategico_redacao_recente');
+        });
+      }
+    } else {
+      if (confirm('Deseja realmente apagar esta correção recente?')) {
+        setCorrecaoRaw(null);
+        setDestaqueSelecionado(null);
+        localStorage.removeItem('superestrategico_redacao_recente');
+      }
     }
   };
 
@@ -1258,7 +1338,95 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
       )}
 
       {/* SEÇÃO PRINCIPAL - LOADING OU FORMULÁRIO OU RESULTADO */}
-      {loading ? (
+      <div className="flex flex-col lg:flex-row gap-6 items-start w-full" id="essay-workspace-container">
+        {/* BARRA LATERAL (HISTÓRICO) */}
+        {sidebarAberta && (
+          <div className="w-full lg:w-72 shrink-0 bg-[#0F172A] border border-[#1E293B] rounded p-4 space-y-4 flex flex-col self-stretch no-print">
+            <div className="flex items-center justify-between border-b border-[#1E293B] pb-3">
+              <div className="flex items-center gap-2">
+                <FileText size={16} className="text-[#C5A059]" />
+                <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider">Histórico</h3>
+              </div>
+              <button
+                onClick={() => setSidebarAberta(false)}
+                className="text-[#64748B] hover:text-white transition-colors"
+                title="Recolher Histórico"
+              >
+                <ChevronLeft size={16} />
+              </button>
+            </div>
+
+            <button
+              onClick={handleNovaCorrecao}
+              className="w-full py-2 bg-[#C5A059] hover:bg-[#C5A059]/90 text-black font-bold text-xs rounded transition-all flex items-center justify-center gap-1.5 shadow"
+            >
+              <PenTool size={12} /> Nova Correção
+            </button>
+
+            <div className="flex-1 overflow-y-auto space-y-2 max-h-[550px] pr-1 scrollbar-thin">
+              {redacoesHistorico.length === 0 ? (
+                <div className="text-center py-8 text-[#64748B] text-xs">
+                  Nenhuma redação no histórico.
+                </div>
+              ) : (
+                redacoesHistorico.map((item) => {
+                  const selecionada = redacaoSelecionadaId === item.id;
+                  const dataFormatada = new Date(item.dataCriacao).toLocaleDateString('pt-BR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  });
+
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => handleSelecionarRedacao(item)}
+                      className={`group p-3 rounded border text-left cursor-pointer transition-all ${
+                        selecionada
+                          ? 'bg-[#C5A059]/10 border-[#C5A059] text-white shadow-md'
+                          : 'bg-[#0C0E12] border-[#1E293B] text-[#94A3B8] hover:border-[#2D3748] hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-1 mb-1.5">
+                        <span className="text-[10px] font-mono text-[#64748B]">{dataFormatada}</span>
+                        <button
+                          onClick={(e) => handleDeletarHistorico(item.id, e)}
+                          className="text-[#64748B] hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
+                          title="Excluir do histórico"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                      <h4 className="text-xs font-semibold truncate leading-snug">{item.tema || 'Sem tema'}</h4>
+                      <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-[#1E293B]/60 text-[9px] font-mono text-[#64748B]">
+                        <span>{item.banca} • {item.concurso}</span>
+                        <span className={`px-1.5 py-0.5 rounded font-bold ${
+                          selecionada ? 'bg-[#C5A059]/20 text-[#C5A059]' : 'bg-[#1E293B] text-white'
+                        }`}>{item.notaGlobal}</span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* CONTAINER DO PAINEL PRINCIPAL */}
+        <div className="flex-1 w-full space-y-6">
+          {/* BOTÃO PARA EXIBIR A BARRA LATERAL (SE ESTIVER RECOLHIDA) */}
+          {!sidebarAberta && (
+            <button
+              onClick={() => setSidebarAberta(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0F172A] border border-[#1E293B] hover:border-[#2D3748] text-xs font-mono font-medium rounded text-white transition-all no-print mb-2"
+            >
+              <ChevronRight size={14} className="text-[#C5A059]" />
+              <span>Ver Histórico ({redacoesHistorico.length})</span>
+            </button>
+          )}
+
+          {loading ? (
         <div className="bg-[#0F172A] border border-[#1E293B] rounded p-12 shadow-sm flex flex-col items-center justify-center space-y-4 text-center animate-pulse" id="essay-loading-box">
           <div className="p-4 bg-[#0C0E12] border border-[#2D3748] text-[#C5A059] rounded-full animate-spin">
             <RefreshCcw size={28} />
@@ -1846,6 +2014,8 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
 
         </div>
       )}
+        </div>
+      </div>
 
     </div>
   );
