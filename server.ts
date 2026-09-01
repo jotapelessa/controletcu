@@ -24,7 +24,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({
@@ -100,12 +100,23 @@ app.post("/api/diagnostico", limiter, async (req, res) => {
 
     const { materias, simulados, historico, totalHoras, totalQuestoes, totalAcertos } = req.body;
 
-    if (!process.env.GEMINI_API_KEY) {
+    const geminiKey = process.env.GEMINI_API_KEY || (req.headers['x-gemini-api-key'] as string);
+
+    if (!geminiKey) {
       return res.status(200).json({
         success: true,
-        diagnostico: "⚠️ **Chave API (GEMINI_API_KEY) não encontrada.** Por favor, configure seus segredos no painel de Configurações para habilitar o Diagnóstico Inteligente de IA!"
+        diagnostico: "⚠️ **Chave API (GEMINI_API_KEY) não encontrada.** Por favor, configure a chave no arquivo .env do servidor ou nas Configurações da plataforma para habilitar o Diagnóstico Inteligente de IA!"
       });
     }
+
+    const aiClient = new GoogleGenAI({
+      apiKey: geminiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
 
     const materiasResumo = materias.map((m: any) => {
       const concluidas = m.aulas.filter((a: any) => a.status === 'Concluído').length;
@@ -174,7 +185,7 @@ Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag 
 
 Mantenha uma linguagem acadêmica, séria e focada na excelência profissional que o cargo de Auditor exige.`;
 
-    const response = await ai.models.generateContent({
+    const response = await aiClient.models.generateContent({
       model: "gemini-3.5-flash",
       contents: prompt,
     });
@@ -212,13 +223,24 @@ app.post("/api/analisar-edital", limiter, async (req, res) => {
       return res.status(400).json({ success: false, error: "O texto do edital não pode estar vazio." });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
+    const geminiKey = process.env.GEMINI_API_KEY || (req.headers['x-gemini-api-key'] as string);
+
+    if (!geminiKey) {
       return res.status(200).json({
         success: true,
         mocked: true,
         error: "⚠️ Chave API (GEMINI_API_KEY) não configurada no servidor. Cadastre sua chave pessoal nas Configurações para realizar a importação direta via navegador!"
       });
     }
+
+    const aiClient = new GoogleGenAI({
+      apiKey: geminiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
 
     const prompt = `Você é o Super Analisador de Editais do SuperEstrategico. Sua função é ler o texto completo de um edital de concurso público ou processo seletivo e extrair todas as informações de forma precisa, organizada e estruturada, focando na montagem automática do plano de estudos do aluno.
 
@@ -354,7 +376,7 @@ Retorne o JSON conforme a estrutura abaixo:
   }
 }`;
 
-    const response = await ai.models.generateContent({
+    const response = await aiClient.models.generateContent({
       model: "gemini-3.5-flash",
       contents: prompt
     });

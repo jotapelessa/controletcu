@@ -337,7 +337,8 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
-            ...(token ? { "Authorization": `Bearer ${token}` } : {})
+            ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+            ...(userApiKey ? { "X-Gemini-Api-Key": userApiKey } : {})
           },
           body: JSON.stringify({
             materias,

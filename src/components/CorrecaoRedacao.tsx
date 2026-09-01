@@ -15,6 +15,7 @@ interface CorrecaoEstruturada {
   reescritas: string;
   planoEstudo: string;
   textoComentado: string;
+  brainstormParagrafos: string;
   rawText: string;
 }
 
@@ -48,10 +49,15 @@ export default function CorrecaoRedacao() {
   // Histórico de redações corrigidas
   const [redacoesHistorico, setRedacoesHistorico] = useState<RedacaoCorrigida[]>([]);
   const [redacaoSelecionadaId, setRedacaoSelecionadaId] = useState<string | null>(null);
-  const [sidebarAberta, setSidebarAberta] = useState(true);
+
+  // Filtros, pesquisa e ordenação para o histórico
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filtroBanca, setFiltroBanca] = useState('todas');
+  const [ordemHistorico, setOrdemHistorico] = useState('recentes');
+  const [paginaHistorico, setPaginaHistorico] = useState(1);
 
   // Aba ativa dentro da visualização da correção
-  const [abaResultadoAtiva, setAbaResultadoAtiva] = useState<'nota' | 'comentada' | 'estrutura' | 'gramatica' | 'reescrita' | 'plano' | 'completo'>('nota');
+  const [abaResultadoAtiva, setAbaResultadoAtiva] = useState<'nota' | 'comentada' | 'texto-original' | 'estrutura' | 'gramatica' | 'reescrita' | 'plano' | 'completo' | 'brainstorm'>('nota');
 
   // Carrega as configurações e o histórico salvas no localStorage/Supabase
   useEffect(() => {
@@ -95,12 +101,14 @@ export default function CorrecaoRedacao() {
   const handleSalvarApiKey = () => {
     if (!apiKey.trim()) return;
     localStorage.setItem('superestrategico_user_gemini_api_key', apiKey.trim());
+    window.dispatchEvent(new Event('superestrategico_config_updated'));
     setHasApiKey(true);
     setShowKeyInput(false);
   };
 
   const handleRemoverApiKey = () => {
     localStorage.removeItem('superestrategico_user_gemini_api_key');
+    window.dispatchEvent(new Event('superestrategico_config_updated'));
     setApiKey('');
     setHasApiKey(false);
   };
@@ -150,6 +158,7 @@ export default function CorrecaoRedacao() {
       reescritas: obterSubtexto('[REESCRITA_ESPECIALISTA]', '[/REESCRITA_ESPECIALISTA]'),
       planoEstudo: obterSubtexto('[PLANO_ESTUDO]', '[/PLANO_ESTUDO]'),
       textoComentado: obterSubtexto('[TEXTO_COMENTADO]', '[/TEXTO_COMENTADO]'),
+      brainstormParagrafos: obterSubtexto('[BRAINSTORM_PARAGRAFOS]', '[/BRAINSTORM_PARAGRAFOS]'),
       rawText: text
     };
   };
@@ -175,6 +184,44 @@ export default function CorrecaoRedacao() {
   };
 
   const valoresNota = correcaoEstruturada ? obterValoresNota(correcaoEstruturada.notaGlobal) : null;
+
+  // Extrai as bancas únicas do histórico de redações
+  const bancasDisponiveis = Array.from(
+    new Set(redacoesHistorico.map(r => r.banca).filter(Boolean))
+  );
+
+  // Filtrar e ordenar o histórico
+  const historicoFiltrado = redacoesHistorico
+    .filter(item => {
+      const matchesSearch = 
+        (item.tema || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (item.concurso || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (item.banca || '').toLowerCase().includes(searchTerm.toLowerCase());
+      
+      const matchesBanca = filtroBanca === 'todas' || item.banca === filtroBanca;
+      
+      return matchesSearch && matchesBanca;
+    })
+    .sort((a, b) => {
+      if (ordemHistorico === 'recentes') {
+        return new Date(b.dataCriacao).getTime() - new Date(a.dataCriacao).getTime();
+      }
+      const notaA = obterValoresNota(a.notaGlobal).pct;
+      const notaB = obterValoresNota(b.notaGlobal).pct;
+      if (ordemHistorico === 'nota_max') {
+        return notaB - notaA;
+      }
+      if (ordemHistorico === 'nota_min') {
+        return notaA - notaB;
+      }
+      return 0;
+    });
+
+  const ITEMS_PER_PAGE = 6;
+  const totalPaginas = Math.ceil(historicoFiltrado.length / ITEMS_PER_PAGE);
+  const paginaAtualAjustada = Math.min(paginaHistorico, Math.max(1, totalPaginas));
+  const startIndex = (paginaAtualAjustada - 1) * ITEMS_PER_PAGE;
+  const cardsExibidos = historicoFiltrado.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
   const triggerCorrecao = async () => {
     const userApiKey = localStorage.getItem('superestrategico_user_gemini_api_key');
@@ -244,7 +291,8 @@ Você deve obrigatoriamente estruturar sua resposta utilizando os delimitadores 
 [/NOTA_GLOBAL]
 
 [TEXTO_COMENTADO]
-Escreva o texto integral da redação do aluno na íntegra. No entanto, marque praticamente todas as frases e termos utilizando a tag HTML customizada '<highlight type="tipo" tooltip="sua explicação aqui">trecho original</highlight>'. A ideia é criar um mapeamento visual completo de modo que o texto inteiro (ou quase todo) apareça destacado em cores.
+Escreva o texto integral da redação do aluno na íntegra, letra por letra, sem NENHUMA alteração, omissão, resumo, simplificação, paráfrase ou corte. É CRÍTICO que o texto dentro de '[TEXTO_COMENTADO]' seja exatamente idêntico ao original digitado pelo aluno, apenas com a inserção das tags de destaque.
+Marque praticamente todas as frases e termos utilizando a tag HTML customizada '<highlight type="tipo" tooltip="sua explicação aqui">trecho original</highlight>'. A ideia é criar um mapeamento visual completo de modo que o texto inteiro (ou quase todo) apareça destacado em cores.
 
 Onde o atributo 'type' deve ser exatamente um dos seguintes:
 - 'introducao': para as frases do parágrafo de introdução (contextualização, apresentação do tema e tese).
@@ -256,8 +304,10 @@ Onde o atributo 'type' deve ser exatamente um dos seguintes:
 - 'erro': para desvios de gramática, ortografia, pontuação, crase, concordância, inadequação vocabular ou de registro.
 - 'conclusao': para as frases do parágrafo de conclusão, propostas de intervenção e considerações finais.
 
-O atributo 'tooltip' deve conter uma explicação didática objetiva e clara (limite de 25 palavras) sobre o papel estrutural ou o erro contido naquele trecho específico.
-Certifique-se de que o texto final seja exatamente a redação original do aluno, apenas com a inserção das tags de destaque mapeando toda a estrutura textual de ponta a ponta.
+O atributo 'tooltip' deve conter uma explicação didática profunda, detalhada e específica (com no mínimo 15 a 20 palavras e no máximo 45 palavras) sobre o papel estrutural, a fundamentação jurídica/técnica, a pertinência do achado de auditoria, ou o erro gramatical/conceitual contido naquele trecho específico. Evite feedbacks genéricos como 'conectivo' ou 'introdução'. Diga explicitamente o porquê de estar correto ou como melhorar.
+Para redações longas (como relatórios de auditoria), se houver muitas frases contíguas sem erros ou observações estruturais específicas, você pode agrupar frases longas ou parágrafos inteiros em uma única tag de destaque correspondente àquela seção, mantendo o texto 100% integral e verbatim.
+
+ATENÇÃO CRÍTICA: Nunca aninhe tags '<highlight>'. Uma tag '<highlight>' nunca deve conter outra tag '<highlight>' dentro dela. Se um trecho possui um erro e também faz parte da introdução/argumento/conclusão, você deve dividir os destaques de forma sequencial (exemplo: '<highlight type="conclusao">texto antes do erro </highlight><highlight type="erro">texto com erro</highlight><highlight type="conclusao"> texto após o erro</highlight>'), garantindo que nenhuma tag seja aninhada sob nenhuma hipótese.
 [/TEXTO_COMENTADO]
 
 [ADEQUACAO_ESTRUTURA]
@@ -294,15 +344,27 @@ Certifique-se de que o texto final seja exatamente a redação original do aluno
 [/NOTA_BANCA]
 
 [QUADRO_RESUMO]
-Monte uma tabela em formato markdown contendo:
+Monte uma tabela em formato markdown contendo exatamente a seguinte estrutura (não altere a linha de separação e não adicione colunas extras):
 | Pontos Fortes | Pontos Fracos | Evolução Potencial (Aplicando as Correções) |
+| :--- | :--- | :--- |
 [/QUADRO_RESUMO]
 
 [REESCRITA_ESPECIALISTA]
-Selecione de 1 a 3 trechos problemáticos da redação original e apresente lado a lado utilizando exatamente uma tabela Markdown:
+Selecione de 1 a 3 trechos problemáticos da redação original e apresente lado a lado utilizando exatamente uma tabela Markdown (inclua a linha de separação de colunas abaixo):
 | Original (Trecho do Aluno) | Versão do Especialista (Reescrito) |
+| :--- | :--- |
 E explique detalhadamente abaixo da tabela as alterações e o raciocínio por trás de cada escolha, mostrando como um especialista estruturaria a ideia.
 [/REESCRITA_ESPECIALISTA]
+
+[BRAINSTORM_PARAGRAFOS]
+Realize uma análise crítica profunda do encadeamento lógico e do fluxo de ideias da redação, estruturando em tópicos didáticos:
+1. Identifique e numere cada parágrafo do texto original do aluno.
+2. Para cada parágrafo, elabore:
+   - **Raciocínio Interno:** Como as frases se conectam dentro do próprio parágrafo. Identifique a frase que abre a ideia (tópico frasal), a fundamentação e o desfecho. Avalie se a progressão é clara ou se há quebra de raciocínio.
+   - **Fluxo Argumentativo:** Avalie a estratégia que o aluno adotou para construir sua tese naquele ponto específico.
+3. **Conexões Interparágrafos (Transições):** Analise como os parágrafos se conectam entre si. Avalie se o conectivo ou a transição lógica do final de um parágrafo para o início do outro é forte, suave ou abrupto, sugerindo melhorias práticas de articulação.
+Importante: Seja conciso e objetivo em cada parágrafo (máximo 4 a 5 linhas por parágrafo) para evitar ultrapassar limites de tokens de saída.
+[/BRAINSTORM_PARAGRAFOS]
 
 [PLANO_ESTUDO]
 - Indique quais competências precisam de maior atenção (exemplo: coesão, crase, estrutura de parecer).
@@ -584,7 +646,7 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                 {innerText}
                 
                 {/* TOOLTIP ABSOLUTO POPUP */}
-                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3.5 bg-[#0F172A] border border-[#1E293B] text-[#E2E8F0] text-[11px] leading-relaxed rounded shadow-2xl opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 z-50 font-sans normal-case">
+                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3.5 bg-[#0F172A] border border-[#1E293B] text-[#E2E8F0] text-[11px] leading-relaxed rounded shadow-2xl opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all duration-150 z-50 font-sans normal-case select-none">
                   <span className={`flex items-center gap-1 font-bold mb-1.5 uppercase tracking-wide text-[9px] ${labelColor}`}>
                     {labelText}
                   </span>
@@ -699,7 +761,7 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                 return (
                   <span key={idx} className={`inline px-1 rounded-sm ${bgClass} ${borderClass} text-black print-highlight`}>
                     {innerText}
-                    <sup className={`font-mono font-bold text-[8px] ml-0.5 ${textNumberColor}`}>
+                    <sup className={`font-mono font-bold text-[8px] ml-0.5 select-none ${textNumberColor}`}>
                       {contador}
                     </sup>
                   </span>
@@ -935,6 +997,18 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
             {renderMarkdown(correcaoEstruturada.planoEstudo)}
           </div>
         </div>
+
+        {/* SEÇÃO 9: Brainstorm de Parágrafos (se disponível) */}
+        {correcaoEstruturada.brainstormParagrafos && (
+          <div className="space-y-4 page-break-always">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-1">
+              🧠 Brainstorm da Redação (Raciocínio & Parágrafos)
+            </h2>
+            <div className="text-xs leading-relaxed text-slate-800 font-sans print-markdown">
+              {renderMarkdown(correcaoEstruturada.brainstormParagrafos)}
+            </div>
+          </div>
+        )}
 
         {/* Rodapé da folha */}
         <div className="border-t border-slate-300 pt-3 text-center text-[7px] text-slate-400 font-mono">
@@ -1338,93 +1412,7 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
       )}
 
       {/* SEÇÃO PRINCIPAL - LOADING OU FORMULÁRIO OU RESULTADO */}
-      <div className="flex flex-col lg:flex-row gap-6 items-start w-full" id="essay-workspace-container">
-        {/* BARRA LATERAL (HISTÓRICO) */}
-        {sidebarAberta && (
-          <div className="w-full lg:w-72 shrink-0 bg-[#0F172A] border border-[#1E293B] rounded p-4 space-y-4 flex flex-col self-stretch no-print">
-            <div className="flex items-center justify-between border-b border-[#1E293B] pb-3">
-              <div className="flex items-center gap-2">
-                <FileText size={16} className="text-[#C5A059]" />
-                <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider">Histórico</h3>
-              </div>
-              <button
-                onClick={() => setSidebarAberta(false)}
-                className="text-[#64748B] hover:text-white transition-colors"
-                title="Recolher Histórico"
-              >
-                <ChevronLeft size={16} />
-              </button>
-            </div>
-
-            <button
-              onClick={handleNovaCorrecao}
-              className="w-full py-2 bg-[#C5A059] hover:bg-[#C5A059]/90 text-black font-bold text-xs rounded transition-all flex items-center justify-center gap-1.5 shadow"
-            >
-              <PenTool size={12} /> Nova Correção
-            </button>
-
-            <div className="flex-1 overflow-y-auto space-y-2 max-h-[550px] pr-1 scrollbar-thin">
-              {redacoesHistorico.length === 0 ? (
-                <div className="text-center py-8 text-[#64748B] text-xs">
-                  Nenhuma redação no histórico.
-                </div>
-              ) : (
-                redacoesHistorico.map((item) => {
-                  const selecionada = redacaoSelecionadaId === item.id;
-                  const dataFormatada = new Date(item.dataCriacao).toLocaleDateString('pt-BR', {
-                    day: '2-digit',
-                    month: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                  });
-
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => handleSelecionarRedacao(item)}
-                      className={`group p-3 rounded border text-left cursor-pointer transition-all ${
-                        selecionada
-                          ? 'bg-[#C5A059]/10 border-[#C5A059] text-white shadow-md'
-                          : 'bg-[#0C0E12] border-[#1E293B] text-[#94A3B8] hover:border-[#2D3748] hover:text-white'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-1 mb-1.5">
-                        <span className="text-[10px] font-mono text-[#64748B]">{dataFormatada}</span>
-                        <button
-                          onClick={(e) => handleDeletarHistorico(item.id, e)}
-                          className="text-[#64748B] hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
-                          title="Excluir do histórico"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                      <h4 className="text-xs font-semibold truncate leading-snug">{item.tema || 'Sem tema'}</h4>
-                      <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-[#1E293B]/60 text-[9px] font-mono text-[#64748B]">
-                        <span>{item.banca} • {item.concurso}</span>
-                        <span className={`px-1.5 py-0.5 rounded font-bold ${
-                          selecionada ? 'bg-[#C5A059]/20 text-[#C5A059]' : 'bg-[#1E293B] text-white'
-                        }`}>{item.notaGlobal}</span>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* CONTAINER DO PAINEL PRINCIPAL */}
-        <div className="flex-1 w-full space-y-6">
-          {/* BOTÃO PARA EXIBIR A BARRA LATERAL (SE ESTIVER RECOLHIDA) */}
-          {!sidebarAberta && (
-            <button
-              onClick={() => setSidebarAberta(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0F172A] border border-[#1E293B] hover:border-[#2D3748] text-xs font-mono font-medium rounded text-white transition-all no-print mb-2"
-            >
-              <ChevronRight size={14} className="text-[#C5A059]" />
-              <span>Ver Histórico ({redacoesHistorico.length})</span>
-            </button>
-          )}
+      <div className="w-full space-y-6" id="essay-workspace-container">
 
           {loading ? (
         <div className="bg-[#0F172A] border border-[#1E293B] rounded p-12 shadow-sm flex flex-col items-center justify-center space-y-4 text-center animate-pulse" id="essay-loading-box">
@@ -1573,6 +1561,17 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                   </button>
 
                   <button
+                    onClick={() => setAbaResultadoAtiva('texto-original')}
+                    className={`w-full text-left px-3 py-2 rounded font-mono font-bold transition-all flex items-center gap-2 ${
+                      abaResultadoAtiva === 'texto-original' 
+                        ? 'bg-[#C5A059]/10 border-l-2 border-[#C5A059] text-white' 
+                        : 'text-[#64748B] hover:text-[#C5A059]'
+                    }`}
+                  >
+                    <FileText size={13} /> 📄 Texto Original
+                  </button>
+
+                  <button
                     onClick={() => setAbaResultadoAtiva('estrutura')}
                     className={`w-full text-left px-3 py-2 rounded font-mono font-bold transition-all flex items-center gap-2 ${
                       abaResultadoAtiva === 'estrutura' 
@@ -1614,6 +1613,17 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                     }`}
                   >
                     <BookOpen size={13} /> 📅 Plano de Estudos
+                  </button>
+
+                  <button
+                    onClick={() => setAbaResultadoAtiva('brainstorm')}
+                    className={`w-full text-left px-3 py-2 rounded font-mono font-bold transition-all flex items-center gap-2 ${
+                      abaResultadoAtiva === 'brainstorm' 
+                        ? 'bg-[#C5A059]/10 border-l-2 border-[#C5A059] text-white' 
+                        : 'text-[#64748B] hover:text-[#C5A059]'
+                    }`}
+                  >
+                    <Sparkles size={13} className="text-[#C5A059]" /> 🧠 Brainstorm da Redação
                   </button>
 
                   <button
@@ -1750,6 +1760,22 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                   </div>
                 )}
 
+                {abaResultadoAtiva === 'texto-original' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h4 className="text-sm font-mono font-bold text-white uppercase tracking-wider mb-2 flex items-center gap-1.5 border-b border-[#1E293B] pb-2">
+                        <FileText size={15} className="text-[#C5A059]" /> Texto Original da Redação
+                      </h4>
+                      <p className="text-[11px] text-[#94A3B8] italic mb-4 leading-relaxed">
+                        Abaixo está a versão limpa e sem marcações do texto que você enviou para correção. Útil para copiar e reutilizar:
+                      </p>
+                      <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-6 text-xs text-[#E2E8F0] leading-relaxed whitespace-pre-wrap font-sans select-text">
+                        {texto}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {abaResultadoAtiva === 'estrutura' && (
                   <div className="space-y-6">
                     <div>
@@ -1827,6 +1853,26 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                       </h4>
                       <div className="prose prose-invert max-w-none text-xs leading-relaxed">
                         {renderMarkdown(correcaoEstruturada.planoEstudo)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {abaResultadoAtiva === 'brainstorm' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h4 className="text-sm font-mono font-bold text-white uppercase tracking-wider mb-2 flex items-center gap-1.5 border-b border-[#1E293B] pb-2">
+                        <Sparkles size={15} className="text-[#C5A059]" /> 🧠 Brainstorm da Redação (Raciocínio & Parágrafos)
+                      </h4>
+                      <div className="prose prose-invert max-w-none text-xs leading-relaxed">
+                        {correcaoEstruturada.brainstormParagrafos ? (
+                          renderMarkdown(correcaoEstruturada.brainstormParagrafos)
+                        ) : (
+                          <div className="bg-[#1E293B]/40 border-l-2 border-[#C5A059] p-3 text-amber-300 text-[11px] flex items-center gap-2 rounded">
+                            <AlertTriangle size={14} className="shrink-0" />
+                            <span>Diagnóstico de brainstorm indisponível para este histórico antigo.</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2014,7 +2060,160 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
 
         </div>
       )}
+
+      {/* SEÇÃO DO HISTÓRICO DE REDAÇÕES NA BASE DA PÁGINA */}
+      <hr className="border-[#1E293B] my-8 no-print" />
+      
+      <div className="w-full bg-[#0F172A] border border-[#1E293B] rounded p-6 space-y-6 no-print">
+        
+        {/* Barra de Filtros e Busca */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#1E293B] pb-4">
+          <div className="flex items-center gap-2">
+            <FileText size={18} className="text-[#C5A059]" />
+            <div>
+              <h3 className="text-sm font-bold text-white font-mono uppercase tracking-wider">Histórico de Redações</h3>
+              <p className="text-[10px] text-[#64748B]">Total: {historicoFiltrado.length} {historicoFiltrado.length === 1 ? 'redação' : 'redações'}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center flex-1 md:max-w-2xl justify-end">
+            {/* Barra de pesquisa */}
+            <input
+              type="text"
+              placeholder="Pesquisar tema, banca ou concurso..."
+              value={searchTerm}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setPaginaHistorico(1); // Reseta para a primeira página
+              }}
+              className="bg-[#0C0E12] border border-[#1E293B] rounded px-3 py-1.5 text-xs text-white placeholder-[#475569] focus:outline-none focus:border-[#C5A059] flex-1 min-w-[180px]"
+            />
+
+            {/* Filtro por Banca */}
+            <select
+              value={filtroBanca}
+              onChange={(e) => {
+                setFiltroBanca(e.target.value);
+                setPaginaHistorico(1);
+              }}
+              className="bg-[#0C0E12] border border-[#1E293B] rounded px-3 py-1.5 text-xs text-[#94A3B8] focus:outline-none focus:border-[#C5A059] cursor-pointer"
+            >
+              <option value="todas">Todas as Bancas</option>
+              {bancasDisponiveis.map(b => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+
+            {/* Ordenação */}
+            <select
+              value={ordemHistorico}
+              onChange={(e) => {
+                setOrdemHistorico(e.target.value);
+                setPaginaHistorico(1);
+              }}
+              className="bg-[#0C0E12] border border-[#1E293B] rounded px-3 py-1.5 text-xs text-[#94A3B8] focus:outline-none focus:border-[#C5A059] cursor-pointer"
+            >
+              <option value="recentes">Mais Recentes</option>
+              <option value="nota_max">Maior Nota</option>
+              <option value="nota_min">Menor Nota</option>
+            </select>
+          </div>
         </div>
+
+        {/* Grade de Cards Pagina */}
+        {cardsExibidos.length === 0 ? (
+          <div className="text-center py-12 text-[#64748B] text-xs bg-[#0C0E12] border border-[#1E293B] rounded-lg">
+            Nenhuma redação encontrada para os filtros aplicados.
+            {(searchTerm || filtroBanca !== 'todas') && (
+              <button
+                onClick={() => {
+                  setSearchTerm('');
+                  setFiltroBanca('todas');
+                  setPaginaHistorico(1);
+                }}
+                className="mt-3 block mx-auto text-[#C5A059] hover:underline text-xs font-mono font-bold cursor-pointer"
+              >
+                Limpar Filtros
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {cardsExibidos.map((item) => {
+              const selecionada = redacaoSelecionadaId === item.id;
+              const dataFormatada = new Date(item.dataCriacao).toLocaleDateString('pt-BR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+
+              return (
+                <div
+                  key={item.id}
+                  onClick={() => {
+                    handleSelecionarRedacao(item);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className={`group p-4 rounded-xl border text-left cursor-pointer transition-all flex flex-col justify-between h-44 ${
+                    selecionada
+                      ? 'bg-[#C5A059]/10 border-[#C5A059] text-white shadow-lg'
+                      : 'bg-[#0C0E12] border-[#1E293B] text-[#94A3B8] hover:border-[#2D3748] hover:text-white hover:shadow-md'
+                  }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[10px] font-mono text-[#64748B]">{dataFormatada}</span>
+                      <button
+                        onClick={(e) => handleDeletarHistorico(item.id, e)}
+                        className="text-[#64748B] hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-[#1E293B]"
+                        title="Excluir do histórico"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                    <h4 className="text-xs font-bold line-clamp-2 leading-snug text-white group-hover:text-[#C5A059] transition-colors">{item.tema || 'Sem tema'}</h4>
+                    <p className="text-[10px] text-[#64748B] line-clamp-1">{item.concurso} • {item.tipo}</p>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-[#1E293B]/60 pt-3 mt-3">
+                    <span className="text-[10px] font-mono font-bold bg-[#1E293B] text-[#E2E8F0] px-2 py-0.5 rounded">
+                      {item.banca}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded font-mono font-black text-xs ${
+                      selecionada ? 'bg-[#C5A059] text-black' : 'bg-[#C5A059]/20 text-[#C5A059]'
+                    }`}>{item.notaGlobal}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Paginação */}
+        {totalPaginas > 1 && (
+          <div className="flex items-center justify-center gap-3 pt-4 border-t border-[#1E293B]/60">
+            <button
+              onClick={() => setPaginaHistorico(prev => Math.max(1, prev - 1))}
+              disabled={paginaAtualAjustada === 1}
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#0C0E12] border border-[#1E293B] hover:border-[#2D3748] rounded text-xs text-[#94A3B8] disabled:opacity-30 disabled:hover:border-[#1E293B] transition-colors cursor-pointer"
+            >
+              <ChevronLeft size={14} /> Anterior
+            </button>
+            <span className="text-xs font-mono text-[#64748B]">
+              Página {paginaAtualAjustada} de {totalPaginas}
+            </span>
+            <button
+              onClick={() => setPaginaHistorico(prev => Math.min(totalPaginas, prev + 1))}
+              disabled={paginaAtualAjustada === totalPaginas}
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#0C0E12] border border-[#1E293B] hover:border-[#2D3748] rounded text-xs text-[#94A3B8] disabled:opacity-30 disabled:hover:border-[#1E293B] transition-colors cursor-pointer"
+            >
+              Próximo <ChevronRight size={14} />
+            </button>
+          </div>
+        )}
+
+      </div>
       </div>
 
     </div>

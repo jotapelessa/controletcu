@@ -2,7 +2,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { RedacaoCorrigida } from '../types';
 
 const LOCAL_STORAGE_KEY = 'superestrategico_redacoes_historico';
-const MAX_LOCAL_ITEMS = 50;
+const MAX_LOCAL_ITEMS = 30;
 
 // Carrega a lista do localStorage
 function obterDoLocalStorage(): RedacaoCorrigida[] {

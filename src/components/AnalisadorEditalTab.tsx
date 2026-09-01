@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Materia, Aula, StatusAula } from '../types';
 import { Sparkles, FileText, Calendar, DollarSign, Award, RefreshCcw, Trash2, ArrowLeft, CheckCircle, AlertTriangle, ChevronDown, ChevronUp, Layers, Flame } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { salvarEditalAnalisado, obterEditalAnalisado, removerEditalAnalisado } from '../utils/editalService';
 
 export default function AnalisadorEditalTab() {
   // Rascunho persistido no localStorage para evitar perda de dados ao navegar entre abas
@@ -27,6 +28,34 @@ export default function AnalisadorEditalTab() {
   const [pdfAvisoScanned, setPdfAvisoScanned] = useState(false);
 
 
+
+  // Carregar edital do Supabase na inicialização se o rascunho local estiver vazio
+  useEffect(() => {
+    const carregarEditalNuvem = async () => {
+      const localText = localStorage.getItem('superestrategico_edital_buffer_text');
+      const localJson = localStorage.getItem('superestrategico_edital_buffer_json');
+
+      if (!localText && !localJson) {
+        try {
+          const cloudData = await obterEditalAnalisado();
+          if (cloudData) {
+            if (cloudData.editalText) {
+              setEditalText(cloudData.editalText);
+              localStorage.setItem('superestrategico_edital_buffer_text', cloudData.editalText);
+            }
+            if (cloudData.editalJson) {
+              setExtractedEdital(cloudData.editalJson);
+              localStorage.setItem('superestrategico_edital_buffer_json', JSON.stringify(cloudData.editalJson));
+            }
+          }
+        } catch (e) {
+          console.error("Erro ao carregar edital da nuvem:", e);
+        }
+      }
+    };
+
+    carregarEditalNuvem();
+  }, []);
 
   // Sincronizar o rascunho de texto e JSON com o localStorage
   useEffect(() => {
@@ -400,7 +429,8 @@ Retorne o JSON conforme a estrutura abaixo:
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
-            ...(token ? { "Authorization": `Bearer ${token}` } : {})
+            ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+            ...(userApiKey ? { "X-Gemini-Api-Key": userApiKey } : {})
           },
           body: JSON.stringify({ editalText })
         });
@@ -422,6 +452,7 @@ Retorne o JSON conforme a estrutura abaixo:
       }
 
       setExtractedEdital(parsedData);
+      await salvarEditalAnalisado(editalText, parsedData);
 
     } catch (err: any) {
       console.error("Erro no importador de edital IA:", err);
@@ -669,7 +700,10 @@ Retorne o JSON conforme a estrutura abaixo:
               </span>
               <button
                 type="button"
-                onClick={() => setExtractedEdital(null)}
+                onClick={async () => {
+                  setExtractedEdital(null);
+                  await salvarEditalAnalisado(editalText, null);
+                }}
                 className="text-[10px] text-[#94A3B8] hover:text-white flex items-center gap-1 bg-[#1E293B] px-2 py-1 rounded"
               >
                 <ArrowLeft size={10} /> Voltar/Editar Texto
@@ -902,12 +936,13 @@ Retorne o JSON conforme a estrutura abaixo:
             <div className="flex justify-end pt-3 border-t border-[#1E293B]">
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (confirm("Deseja realmente iniciar uma nova análise e limpar os dados atuais?")) {
                     setExtractedEdital(null);
                     setEditalText('');
                     localStorage.removeItem('superestrategico_edital_buffer_text');
                     localStorage.removeItem('superestrategico_edital_buffer_json');
+                    await removerEditalAnalisado();
                   }
                 }}
                 className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"

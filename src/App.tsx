@@ -42,6 +42,9 @@ export default function App() {
   const isSyncingFromCloud = useRef(false);
   // Estado de erro de sync visível ao usuário
   const [syncError, setSyncError] = useState<{ friendly: string; technical: string } | null>(null);
+  // Estado de sucesso de sync visível ao usuário
+  const [showSyncSuccessToast, setShowSyncSuccessToast] = useState(false);
+  const syncSuccessTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const getFriendlySyncErrorMessage = (err: any): { friendly: string; technical: string } => {
     const errMsg = err?.message || err?.error_description || JSON.stringify(err) || '';
@@ -208,6 +211,15 @@ export default function App() {
     }
   }, []);
 
+  // Limpar timer de sucesso ao desmontar
+  useEffect(() => {
+    return () => {
+      if (syncSuccessTimeoutRef.current) {
+        clearTimeout(syncSuccessTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Sincronizar automaticamente com o Supabase quando o estado mudar localmente (debounced)
   useEffect(() => {
     if (!userSession || !isSupabaseConfigured) return;
@@ -222,7 +234,15 @@ export default function App() {
       sendDadosToCloud(userSession.user.id);
     }, 1500);
 
-    return () => clearTimeout(delayDebounceFn);
+    const handleConfigUpdated = () => {
+      sendDadosToCloud(userSession.user.id);
+    };
+    window.addEventListener('superestrategico_config_updated', handleConfigUpdated);
+
+    return () => {
+      clearTimeout(delayDebounceFn);
+      window.removeEventListener('superestrategico_config_updated', handleConfigUpdated);
+    };
   }, [materias, ciclo, simulados, revisoes, historico, userSession]);
 
   // Helper para aplicar configurações salvas no localStorage
@@ -250,6 +270,10 @@ export default function App() {
     }
     if (conf.github_token !== undefined && conf.github_token !== null) localStorage.setItem('superestrategico_github_token', conf.github_token);
     if (conf.github_gist_id !== undefined && conf.github_gist_id !== null) localStorage.setItem('superestrategico_github_gist_id', conf.github_gist_id);
+    if (conf.user_gemini_api_key !== undefined && conf.user_gemini_api_key !== null) {
+      if (conf.user_gemini_api_key) localStorage.setItem('superestrategico_user_gemini_api_key', conf.user_gemini_api_key);
+      else localStorage.removeItem('superestrategico_user_gemini_api_key');
+    }
   };
 
   // Função para enviar os dados atuais ao Supabase
@@ -282,7 +306,8 @@ export default function App() {
         timer_modal_open: localStorage.getItem('superestrategico_timer_modal_open') === 'true',
         ia_diagnostico_recente: localStorage.getItem('superestrategico_ia_diagnostico_recente'),
         github_token: localStorage.getItem('superestrategico_github_token') || '',
-        github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || ''
+        github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || '',
+        user_gemini_api_key: localStorage.getItem('superestrategico_user_gemini_api_key') || ''
       };
       
       const payload = {
@@ -337,6 +362,15 @@ export default function App() {
       const nowStr = new Date().toLocaleString('pt-BR');
       setLastSyncCloudTime(nowStr);
       localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+
+      // Disparar toast de sucesso
+      if (syncSuccessTimeoutRef.current) {
+        clearTimeout(syncSuccessTimeoutRef.current);
+      }
+      setShowSyncSuccessToast(true);
+      syncSuccessTimeoutRef.current = setTimeout(() => {
+        setShowSyncSuccessToast(false);
+      }, 2500);
     } catch (err: any) {
       console.error('Erro ao enviar dados para o Supabase:', err);
       setSyncError(getFriendlySyncErrorMessage(err));
@@ -1326,6 +1360,34 @@ export default function App() {
           >
             {syncError.technical}
           </div>
+        </div>
+      )}
+
+      {/* Toast de sucesso de sincronização */}
+      {showSyncSuccessToast && (
+        <div
+          className="fixed bottom-6 right-6 z-[9999] flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border border-emerald-500/30 bg-[#0C1510]/95 backdrop-blur-md text-emerald-400 text-sm font-medium animate-editorial-node"
+          style={{ boxShadow: '0 0 20px rgba(16,185,129,0.15)' }}
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 shrink-0">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <div className="flex flex-col pr-2">
+            <span className="font-semibold text-white">Sincronizado!</span>
+            <span className="text-[10px] text-emerald-400/80 text-left">Dados salvos na nuvem do Supabase</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowSyncSuccessToast(false)}
+            className="text-emerald-500 hover:text-emerald-300 font-bold text-xs shrink-0 cursor-pointer ml-auto"
+            aria-label="Fechar notificação"
+          >
+            ✕
+          </button>
         </div>
       )}
     </div>

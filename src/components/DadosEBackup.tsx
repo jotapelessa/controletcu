@@ -123,12 +123,14 @@ export default function DadosEBackup({
 
   const handleSalvarGeminiKey = () => {
     localStorage.setItem('superestrategico_user_gemini_api_key', geminiApiKey.trim());
+    window.dispatchEvent(new Event('superestrategico_config_updated'));
     setSuccessMsg('🗝️ Chave de API do Gemini salva com sucesso localmente!');
     setTimeout(() => setSuccessMsg(''), 5000);
   };
 
   const handleRemoverGeminiKey = () => {
     localStorage.removeItem('superestrategico_user_gemini_api_key');
+    window.dispatchEvent(new Event('superestrategico_config_updated'));
     setGeminiApiKey('');
     setTestStatus('idle');
     setTestMessage('');

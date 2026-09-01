@@ -235,8 +235,40 @@ CREATE POLICY "delete_own_redacoes" ON public.redacoes_corrigidas
 -- ALTER PUBLICATION supabase_realtime ADD TABLE public.cms_settings;
 
 -- =========================================================================
+-- 8. edital_analisado — Backup e rascunho de edital extraído por usuário
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS public.edital_analisado (
+    user_id UUID NOT NULL PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    edital_text TEXT,
+    edital_json JSONB
+);
+
+ALTER TABLE public.edital_analisado ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "select_own_edital_analisado" ON public.edital_analisado;
+DROP POLICY IF EXISTS "insert_own_edital_analisado" ON public.edital_analisado;
+DROP POLICY IF EXISTS "update_own_edital_analisado" ON public.edital_analisado;
+DROP POLICY IF EXISTS "delete_own_edital_analisado" ON public.edital_analisado;
+
+CREATE POLICY "select_own_edital_analisado" ON public.edital_analisado
+    FOR SELECT TO authenticated USING (auth.uid() = user_id);
+
+CREATE POLICY "insert_own_edital_analisado" ON public.edital_analisado
+    FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "update_own_edital_analisado" ON public.edital_analisado
+    FOR UPDATE TO authenticated
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "delete_own_edital_analisado" ON public.edital_analisado
+    FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- =========================================================================
 -- VERIFICAÇÃO: Execute para confirmar que as tabelas existem
 -- =========================================================================
 -- SELECT table_name FROM information_schema.tables
 -- WHERE table_schema = 'public'
 -- ORDER BY table_name;
+
