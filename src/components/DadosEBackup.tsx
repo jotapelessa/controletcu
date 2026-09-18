@@ -18,9 +18,21 @@ import {
   Info,
   Sparkles,
   Sliders,
-  Check
+  Check,
+  BarChart2,
+  Zap,
+  Activity,
+  Coins
 } from 'lucide-react';
 import { gerarDadosSimuladosExtrema } from '../utils/seeder';
+import { 
+  obterResumoTokens, 
+  obterLogsTokens, 
+  limparHistoricoTokens, 
+  registrarConsumoTokens,
+  TokenUsageSummary, 
+  GeminiTokenLog 
+} from '../utils/geminiTokenTracker';
 
 
 interface AppBackup {
@@ -121,6 +133,30 @@ export default function DadosEBackup({
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
 
+  // Estados de Rastreamento de Tokens da API Gemini
+  const [tokenSummary, setTokenSummary] = useState<TokenUsageSummary>(() => obterResumoTokens());
+  const [tokenLogs, setTokenLogs] = useState<GeminiTokenLog[]>(() => obterLogsTokens());
+  const [mostrarTodosLogs, setMostrarTodosLogs] = useState(false);
+  const [confirmandoLimpezaTokens, setConfirmandoLimpezaTokens] = useState(false);
+
+  useEffect(() => {
+    const handleTokensUpdated = () => {
+      setTokenSummary(obterResumoTokens());
+      setTokenLogs(obterLogsTokens());
+    };
+    window.addEventListener('superestrategico_tokens_updated', handleTokensUpdated);
+    return () => {
+      window.removeEventListener('superestrategico_tokens_updated', handleTokensUpdated);
+    };
+  }, []);
+
+  const handleLimparHistoricoTokens = () => {
+    limparHistoricoTokens();
+    setConfirmandoLimpezaTokens(false);
+    setSuccessMsg('🗑️ Histórico de consumo de tokens limpo com sucesso!');
+    setTimeout(() => setSuccessMsg(''), 5000);
+  };
+
   const handleSalvarGeminiKey = () => {
     localStorage.setItem('superestrategico_user_gemini_api_key', geminiApiKey.trim());
     window.dispatchEvent(new Event('superestrategico_config_updated'));
@@ -191,6 +227,18 @@ export default function DadosEBackup({
       if (response && response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
         setTestStatus('success');
         setTestMessage(`Conexão ativa! O Gemini (${usedModel}) respondeu com sucesso.`);
+
+        // Registrar consumo do teste caso retorne usageMetadata
+        if (data.usageMetadata) {
+          registrarConsumoTokens({
+            feature: 'teste',
+            featureName: 'Teste de Conexão',
+            model: usedModel || 'gemini-3.5-flash',
+            promptTokens: data.usageMetadata.promptTokenCount,
+            candidatesTokens: data.usageMetadata.candidatesTokenCount,
+            totalTokens: data.usageMetadata.totalTokenCount
+          });
+        }
       } else {
         const errorMsg = lastError || 'Erro desconhecido retornado pela API do Gemini.';
         const isQuota = (response && response.status === 429) || errorMsg.toLowerCase().includes('quota') || errorMsg.toLowerCase().includes('limit');
@@ -1147,6 +1195,210 @@ export default function DadosEBackup({
                   {testMessage}
                 </div>
               )}
+
+              {/* SEÇÃO DE MÉTRICAS E GRÁFICOS DE TOKENS */}
+              <div className="pt-4 border-t border-[#1E293B] space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <BarChart2 size={15} className="text-[#C5A059]" />
+                    <h4 className="text-xs font-display font-semibold text-white tracking-wider uppercase">
+                      Consumo de Tokens da API
+                    </h4>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] bg-[#1E293B] text-[#94A3B8] px-2 py-0.5 rounded-full font-mono">
+                      {tokenSummary.totalAnalises} {tokenSummary.totalAnalises === 1 ? 'análise' : 'análises'}
+                    </span>
+                    {tokenSummary.totalAnalises > 0 && (
+                      confirmandoLimpezaTokens ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={handleLimparHistoricoTokens}
+                            className="px-2 py-0.5 bg-rose-900/50 hover:bg-rose-700 text-rose-200 border border-rose-500/40 text-[10px] font-bold rounded cursor-pointer transition-all"
+                          >
+                            Confirmar
+                          </button>
+                          <button
+                            onClick={() => setConfirmandoLimpezaTokens(false)}
+                            className="px-2 py-0.5 bg-[#1E293B] text-[#94A3B8] hover:text-white text-[10px] rounded cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmandoLimpezaTokens(true)}
+                          className="text-[10px] text-[#64748B] hover:text-rose-400 underline cursor-pointer transition-colors"
+                          title="Zerar histórico de métricas"
+                        >
+                          Limpar
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+
+                {/* 3 MINI-CARDS DE RESUMO */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {/* Total Tokens */}
+                  <div className="bg-[#0C0E12] border border-[#1E293B] p-3 rounded space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-[#94A3B8]">
+                      <span>Total de Tokens</span>
+                      <Coins size={12} className="text-[#C5A059]" />
+                    </div>
+                    <div className="text-sm font-bold font-mono text-white">
+                      {tokenSummary.totalTokens.toLocaleString('pt-BR')}
+                    </div>
+                    <div className="text-[9px] text-[#64748B] flex items-center justify-between pt-0.5 border-t border-[#1E293B]/60">
+                      <span className="flex items-center gap-0.5 text-blue-400/80" title="Tokens do Prompt (Entrada)">📥 {tokenSummary.totalPromptTokens.toLocaleString('pt-BR')}</span>
+                      <span className="flex items-center gap-0.5 text-emerald-400/80" title="Tokens da Resposta (Saída)">📤 {tokenSummary.totalCandidatesTokens.toLocaleString('pt-BR')}</span>
+                    </div>
+                  </div>
+
+                  {/* Média por Análise */}
+                  <div className="bg-[#0C0E12] border border-[#1E293B] p-3 rounded space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-[#94A3B8]">
+                      <span>Média / Análise</span>
+                      <Zap size={12} className="text-sky-400" />
+                    </div>
+                    <div className="text-sm font-bold font-mono text-sky-400">
+                      {tokenSummary.mediaTokensPorAnalise.toLocaleString('pt-BR')} <span className="text-[10px] font-normal text-[#94A3B8]">tk</span>
+                    </div>
+                    <div className="text-[9px] text-[#64748B] pt-0.5 border-t border-[#1E293B]/60">
+                      {tokenSummary.totalAnalises > 0 ? `${tokenSummary.totalAnalises} chamadas registradas` : 'Sem registros'}
+                    </div>
+                  </div>
+
+                  {/* Custo Estimado */}
+                  <div className="bg-[#0C0E12] border border-[#1E293B] p-3 rounded space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-[#94A3B8]">
+                      <span>Custo Estimado</span>
+                      <Activity size={12} className="text-emerald-400" />
+                    </div>
+                    <div className="text-sm font-bold font-mono text-emerald-400">
+                      ${tokenSummary.totalCostUsd.toFixed(4)} <span className="text-[10px] font-normal text-[#94A3B8]">USD</span>
+                    </div>
+                    <div className="text-[9px] text-[#64748B] pt-0.5 border-t border-[#1E293B]/60">
+                      ~R$ {(tokenSummary.totalCostUsd * 5.60).toFixed(4)} BRL (Flash)
+                    </div>
+                  </div>
+                </div>
+
+                {/* GRÁFICO PROPORCIONAL DE BARRAS */}
+                {tokenSummary.totalTokens > 0 ? (
+                  <div className="space-y-2 bg-[#0C0E12]/60 border border-[#1E293B]/80 p-3 rounded">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-white font-medium">Distribuição por Funcionalidade</span>
+                      <span className="text-[10px] text-[#64748B]">100% acumulado</span>
+                    </div>
+
+                    {/* Barra Multi-Segmento */}
+                    <div className="h-2.5 w-full bg-[#1E293B] rounded-full overflow-hidden flex gap-0.5">
+                      {tokenSummary.porRecurso.redacao.pct > 0 && (
+                        <div 
+                          style={{ width: `${tokenSummary.porRecurso.redacao.pct}%` }} 
+                          className="bg-[#C5A059] h-full transition-all duration-500 rounded-l-full" 
+                          title={`Redações: ${tokenSummary.porRecurso.redacao.tokens} tokens (${tokenSummary.porRecurso.redacao.pct}%)`} 
+                        />
+                      )}
+                      {tokenSummary.porRecurso.diagnostico.pct > 0 && (
+                        <div 
+                          style={{ width: `${tokenSummary.porRecurso.diagnostico.pct}%` }} 
+                          className="bg-sky-500 h-full transition-all duration-500" 
+                          title={`Diagnóstico: ${tokenSummary.porRecurso.diagnostico.tokens} tokens (${tokenSummary.porRecurso.diagnostico.pct}%)`} 
+                        />
+                      )}
+                      {tokenSummary.porRecurso.edital.pct > 0 && (
+                        <div 
+                          style={{ width: `${tokenSummary.porRecurso.edital.pct}%` }} 
+                          className="bg-emerald-500 h-full transition-all duration-500" 
+                          title={`Editais: ${tokenSummary.porRecurso.edital.tokens} tokens (${tokenSummary.porRecurso.edital.pct}%)`} 
+                        />
+                      )}
+                      {tokenSummary.porRecurso.teste.pct > 0 && (
+                        <div 
+                          style={{ width: `${tokenSummary.porRecurso.teste.pct}%` }} 
+                          className="bg-purple-500 h-full transition-all duration-500 rounded-r-full" 
+                          title={`Testes: ${tokenSummary.porRecurso.teste.tokens} tokens (${tokenSummary.porRecurso.teste.pct}%)`} 
+                        />
+                      )}
+                    </div>
+
+                    {/* Legendas com badges */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="w-2 h-2 rounded-full bg-[#C5A059] shrink-0" />
+                        <span className="text-[#94A3B8] truncate">Redações:</span>
+                        <span className="font-mono text-white font-semibold ml-auto">{tokenSummary.porRecurso.redacao.pct}%</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                        <span className="text-[#94A3B8] truncate">Diagnóstico:</span>
+                        <span className="font-mono text-white font-semibold ml-auto">{tokenSummary.porRecurso.diagnostico.pct}%</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                        <span className="text-[#94A3B8] truncate">Editais:</span>
+                        <span className="font-mono text-white font-semibold ml-auto">{tokenSummary.porRecurso.edital.pct}%</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-[#0C0E12]/50 border border-[#1E293B]/60 rounded text-center text-[11px] text-[#64748B]">
+                    Nenhum consumo de tokens registrado ainda. Faça uma correção de redação ou diagnóstico para ver as métricas.
+                  </div>
+                )}
+
+                {/* HISTÓRICO RECENTE DE TRANSAÇÕES */}
+                {tokenLogs.length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-[#94A3B8] font-medium flex items-center gap-1">
+                        <Clock size={11} className="text-[#C5A059]" />
+                        Últimas Chamadas da API
+                      </span>
+                      {tokenLogs.length > 5 && (
+                        <button
+                          onClick={() => setMostrarTodosLogs(!mostrarTodosLogs)}
+                          className="text-[10px] text-[#C5A059] hover:underline cursor-pointer"
+                        >
+                          {mostrarTodosLogs ? 'Mostrar menos' : `Ver todos (${tokenLogs.length})`}
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                      {(mostrarTodosLogs ? tokenLogs : tokenLogs.slice(0, 5)).map((log) => (
+                        <div
+                          key={log.id}
+                          className="bg-[#0C0E12] border border-[#1E293B] hover:border-[#C5A059]/30 p-2 rounded text-[10px] flex items-center justify-between transition-colors gap-2"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              log.feature === 'redacao' ? 'bg-[#C5A059]' :
+                              log.feature === 'diagnostico' ? 'bg-sky-400' :
+                              log.feature === 'edital' ? 'bg-emerald-400' : 'bg-purple-400'
+                            }`} />
+                            <div className="min-w-0">
+                              <p className="font-semibold text-white truncate">{log.featureName}</p>
+                              <p className="text-[9px] text-[#64748B] font-mono">
+                                {new Date(log.timestamp).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} • {log.model}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <p className="font-mono font-bold text-[#E2E8F0]">{log.totalTokens.toLocaleString('pt-BR')} <span className="text-[9px] font-normal text-[#64748B]">tk</span></p>
+                            <p className="text-[9px] font-mono text-[#64748B]">
+                              ${(log.costUsd || 0).toFixed(5)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

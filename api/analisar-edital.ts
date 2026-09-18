@@ -219,7 +219,8 @@ Retorne o JSON conforme a estrutura abaixo:
 
     return res.status(200).json({
       success: true,
-      data: parsedData
+      data: parsedData,
+      usageMetadata: response.usageMetadata
     });
 
   } catch (err: any) {

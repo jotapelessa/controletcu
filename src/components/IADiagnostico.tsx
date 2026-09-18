@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Materia, Simulado, LogSessao, StatusAula } from '../types';
 import { Sparkles, BarChart2, CheckCircle, RefreshCcw, BookOpen, Clock, Award, ShieldAlert, AlertTriangle, TrendingUp } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { registrarConsumoTokens } from '../utils/geminiTokenTracker';
 
 
 interface IAProps {
@@ -329,6 +330,17 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
             throw new Error(`Geração interrompida prematuramente pela API (Motivo: ${reason}).`);
           }
         }
+
+        if (data?.usageMetadata) {
+          registrarConsumoTokens({
+            feature: 'diagnostico',
+            featureName: 'Diagnóstico de Estudos',
+            model: usedModel || 'gemini-3.5-flash',
+            promptTokens: data.usageMetadata.promptTokenCount,
+            candidatesTokens: data.usageMetadata.candidatesTokenCount,
+            totalTokens: data.usageMetadata.totalTokenCount
+          });
+        }
       } else {
         const { data: authData } = await supabase.auth.getSession();
         const token = authData?.session?.access_token;
@@ -358,6 +370,16 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
         const result = await response.json();
         if (result.success && result.diagnostico) {
           resultText = result.diagnostico;
+          if (result.usageMetadata) {
+            registrarConsumoTokens({
+              feature: 'diagnostico',
+              featureName: 'Diagnóstico de Estudos',
+              model: 'gemini-3.5-flash',
+              promptTokens: result.usageMetadata.promptTokenCount,
+              candidatesTokens: result.usageMetadata.candidatesTokenCount,
+              totalTokens: result.usageMetadata.totalTokenCount
+            });
+          }
         } else {
           throw new Error(result.error || "Erro retornado do servidor de IA.");
         }

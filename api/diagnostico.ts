@@ -128,7 +128,8 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
 
     return res.status(200).json({
       success: true,
-      diagnostico: response.text || "Não foi possível gerar seu diagnóstico inteligente. Tente registrar mais horas de estudo."
+      diagnostico: response.text || "Não foi possível gerar seu diagnóstico inteligente. Tente registrar mais horas de estudo.",
+      usageMetadata: response.usageMetadata
     });
 
   } catch (err: any) {

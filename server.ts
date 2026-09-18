@@ -192,7 +192,8 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
 
     res.json({
       success: true,
-      diagnostico: response.text || "Não foi possível gerar seu diagnóstico inteligente. Tente registrar mais horas de estudo."
+      diagnostico: response.text || "Não foi possível gerar seu diagnóstico inteligente. Tente registrar mais horas de estudo.",
+      usageMetadata: response.usageMetadata
     });
 
   } catch (err: any) {
@@ -393,7 +394,8 @@ Retorne o JSON conforme a estrutura abaixo:
 
     res.json({
       success: true,
-      data: parsedData
+      data: parsedData,
+      usageMetadata: response.usageMetadata
     });
 
   } catch (err: any) {

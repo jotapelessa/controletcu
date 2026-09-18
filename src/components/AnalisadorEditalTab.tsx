@@ -3,6 +3,7 @@ import { Materia, Aula, StatusAula } from '../types';
 import { Sparkles, FileText, Calendar, DollarSign, Award, RefreshCcw, Trash2, ArrowLeft, CheckCircle, AlertTriangle, ChevronDown, ChevronUp, Layers, Flame } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { salvarEditalAnalisado, obterEditalAnalisado, removerEditalAnalisado } from '../utils/editalService';
+import { registrarConsumoTokens } from '../utils/geminiTokenTracker';
 
 export default function AnalisadorEditalTab() {
   // Rascunho persistido no localStorage para evitar perda de dados ao navegar entre abas
@@ -420,6 +421,17 @@ Retorne o JSON conforme a estrutura abaixo:
           const cleanText = candidateText.replace(/```json/g, '').replace(/```/g, '').trim();
           parsedData = JSON.parse(cleanText);
         }
+
+        if (data?.usageMetadata) {
+          registrarConsumoTokens({
+            feature: 'edital',
+            featureName: 'Análise de Edital',
+            model: usedModel || 'gemini-3.5-flash',
+            promptTokens: data.usageMetadata.promptTokenCount,
+            candidatesTokens: data.usageMetadata.candidatesTokenCount,
+            totalTokens: data.usageMetadata.totalTokenCount
+          });
+        }
       } else {
         // Chamada ao backend
         const { data: authData } = await supabase.auth.getSession();
@@ -445,6 +457,17 @@ Retorne o JSON conforme a estrutura abaixo:
         }
 
         parsedData = data.data;
+
+        if (data?.usageMetadata) {
+          registrarConsumoTokens({
+            feature: 'edital',
+            featureName: 'Análise de Edital',
+            model: 'gemini-3.5-flash',
+            promptTokens: data.usageMetadata.promptTokenCount,
+            candidatesTokens: data.usageMetadata.candidatesTokenCount,
+            totalTokens: data.usageMetadata.totalTokenCount
+          });
+        }
       }
 
       if (!parsedData || Object.keys(parsedData).length === 0) {

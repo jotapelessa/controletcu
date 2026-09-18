@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Sparkles, RefreshCcw, AlertTriangle, Send, Copy, Trash2, PenTool, FileText, CheckCircle, HelpCircle, Award, BookOpen, Check, Printer, ChevronLeft, ChevronRight } from 'lucide-react';
 import { RedacaoCorrigida } from '../types';
 import { obterHistoricoRedacoes, adicionarRedacaoAoHistorico, removerRedacaoDoHistorico } from '../utils/redacaoService';
+import { registrarConsumoTokens } from '../utils/geminiTokenTracker';
 
 interface CorrecaoEstruturada {
   dados: string;
@@ -460,6 +461,18 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
         setCorrecaoRaw(resultText);
         localStorage.setItem('superestrategico_redacao_recente', resultText);
         setAbaResultadoAtiva('nota');
+
+        // Registrar consumo de tokens do Gemini
+        if (data?.usageMetadata) {
+          registrarConsumoTokens({
+            feature: 'redacao',
+            featureName: 'Correção de Redação',
+            model: usedModel || 'gemini-3.5-flash',
+            promptTokens: data.usageMetadata.promptTokenCount,
+            candidatesTokens: data.usageMetadata.candidatesTokenCount,
+            totalTokens: data.usageMetadata.totalTokenCount
+          });
+        }
 
         // Adiciona ao histórico de redações
         const parsed = parseCorrecao(resultText);

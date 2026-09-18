@@ -274,6 +274,10 @@ export default function App() {
       if (conf.user_gemini_api_key) localStorage.setItem('superestrategico_user_gemini_api_key', conf.user_gemini_api_key);
       else localStorage.removeItem('superestrategico_user_gemini_api_key');
     }
+    if (conf.gemini_token_logs !== undefined && conf.gemini_token_logs !== null) {
+      localStorage.setItem('superestrategico_gemini_token_logs', JSON.stringify(conf.gemini_token_logs));
+      window.dispatchEvent(new Event('superestrategico_tokens_updated'));
+    }
   };
 
   // Função para enviar os dados atuais ao Supabase
@@ -307,7 +311,8 @@ export default function App() {
         ia_diagnostico_recente: localStorage.getItem('superestrategico_ia_diagnostico_recente'),
         github_token: localStorage.getItem('superestrategico_github_token') || '',
         github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || '',
-        user_gemini_api_key: localStorage.getItem('superestrategico_user_gemini_api_key') || ''
+        user_gemini_api_key: localStorage.getItem('superestrategico_user_gemini_api_key') || '',
+        gemini_token_logs: getLocalStorageItemJson('superestrategico_gemini_token_logs') || []
       };
       
       const payload = {
