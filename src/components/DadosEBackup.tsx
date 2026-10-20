@@ -97,6 +97,25 @@ export default function DadosEBackup({
   const [lastSyncTime, setLastSyncTime] = useState<string>(() => {
     return localStorage.getItem('superestrategico_last_sync_time') || new Date().toLocaleString('pt-BR');
   });
+  const [effectiveCloudSyncTime, setEffectiveCloudSyncTime] = useState<string>(() => {
+    return lastSyncCloudTime || localStorage.getItem('superestrategico_last_sync_cloud_time') || '';
+  });
+
+  useEffect(() => {
+    if (lastSyncCloudTime) {
+      setEffectiveCloudSyncTime(lastSyncCloudTime);
+    }
+  }, [lastSyncCloudTime]);
+
+  useEffect(() => {
+    const handleSyncCloudUpdate = () => {
+      const stored = localStorage.getItem('superestrategico_last_sync_cloud_time') || '';
+      setEffectiveCloudSyncTime(stored);
+    };
+    window.addEventListener('superestrategico_last_sync_cloud_time_updated', handleSyncCloudUpdate);
+    return () => window.removeEventListener('superestrategico_last_sync_cloud_time_updated', handleSyncCloudUpdate);
+  }, []);
+
   const [successMsg, setSuccessMsg] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [isSyncingLocal, setIsSyncingLocal] = useState<boolean>(false);
@@ -272,12 +291,12 @@ export default function DadosEBackup({
   }, []);
 
   // 1. DYNAMIC SYNCHRONIZE OF LOCAL STORAGE (Ambient feedback)
-  const handleSincronizarBancoLocal = () => {
+  const handleSincronizarBancoLocal = async () => {
     setIsSyncingLocal(true);
     setSuccessMsg('');
     setErrorMsg('');
 
-    setTimeout(() => {
+    try {
       // Force saving to localstorage (redundant but gives the user great peace of mind)
       localStorage.setItem('superestrategico_materias', JSON.stringify(materias));
       if (ciclo) localStorage.setItem('superestrategico_ciclo', JSON.stringify(ciclo));
@@ -289,10 +308,23 @@ export default function DadosEBackup({
       localStorage.setItem('superestrategico_last_sync_time', now);
       setLastSyncTime(now);
 
-      setIsSyncingLocal(false);
-      setSuccessMsg('⚡ Banco de dados local sincronizado e otimizado com sucesso!');
+      if (isLoggedIn && onSyncCloud) {
+        try {
+          await onSyncCloud();
+        } catch (cloudErr: any) {
+          console.warn('Erro ao sincronizar com nuvem durante sincronização local:', cloudErr);
+        }
+      }
+
+      setSuccessMsg(
+        isLoggedIn
+          ? '⚡ Banco de dados local e nuvem Supabase sincronizados com sucesso!'
+          : '⚡ Banco de dados local sincronizado e otimizado com sucesso!'
+      );
       setTimeout(() => setSuccessMsg(''), 5000);
-    }, 1200);
+    } finally {
+      setIsSyncingLocal(false);
+    }
   };
 
   // 2. HELPERS TO GENERATE CURRENT STATE DATA AS BACKUP SCHEMA
@@ -780,7 +812,7 @@ export default function DadosEBackup({
                     <div className="flex justify-between text-[11px] font-mono">
                       <span className="text-[#64748B]">Último sincronismo em nuvem:</span>
                       <span className="text-emerald-400 font-bold font-mono">
-                        {lastSyncCloudTime || 'Nunca sincronizado'}
+                        {effectiveCloudSyncTime || 'Nunca sincronizado'}
                       </span>
                     </div>
                   </div>
@@ -807,7 +839,7 @@ export default function DadosEBackup({
                         { label: 'Revisões Espaçadas', key: 'revisoes' },
                         { label: 'Histórico de Foco', key: 'historico' }
                       ].map((item, idx) => {
-                        const isSynced = Boolean(lastSyncCloudTime);
+                        const isSynced = Boolean(effectiveCloudSyncTime);
                         return (
                           <div key={idx} className="flex items-center gap-2 text-[#94A3B8]">
                             {isSyncingCloud ? (

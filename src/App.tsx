@@ -46,6 +46,15 @@ export default function App() {
   const [lastSyncCloudTime, setLastSyncCloudTime] = useState<string>(() => {
     return localStorage.getItem('superestrategico_last_sync_cloud_time') || '';
   });
+
+  useEffect(() => {
+    const handleCloudTimeUpdate = () => {
+      const stored = localStorage.getItem('superestrategico_last_sync_cloud_time') || '';
+      setLastSyncCloudTime(stored);
+    };
+    window.addEventListener('superestrategico_last_sync_cloud_time_updated', handleCloudTimeUpdate);
+    return () => window.removeEventListener('superestrategico_last_sync_cloud_time_updated', handleCloudTimeUpdate);
+  }, []);
   
   const syncedLogIds = useRef<Set<string>>(new Set());
   // Flag booleana para evitar ciclo de auto-sync durante download/sincronização de dados da nuvem
@@ -133,12 +142,19 @@ export default function App() {
           console.warn('refreshSession falhou:', refreshErr);
           const isHardExpired = session.expires_at && (session.expires_at * 1000 <= Date.now());
           if (isHardExpired) {
+            setUserSession(null);
+            setSyncError({
+              friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+              technical: `Sessão expirada em ${new Date(session.expires_at * 1000).toLocaleString('pt-BR')} e token refresh falhou.`
+            });
+            setShowAuthModal(true);
             return null;
           }
         }
       }
 
       if (!session.access_token || !session.user?.id) {
+        setUserSession(null);
         return null;
       }
 
@@ -251,8 +267,13 @@ export default function App() {
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
         if (event === 'INITIAL_SESSION') {
           if (session) {
-            setUserSession(session);
-            fetchAndSetProfile(session.user.id, session.user.email);
+            const isExpired = session.expires_at && (session.expires_at * 1000 <= Date.now());
+            if (isExpired) {
+              setUserSession(null);
+            } else {
+              setUserSession(session);
+              fetchAndSetProfile(session.user.id, session.user.email);
+            }
           }
           return;
         }
@@ -264,6 +285,7 @@ export default function App() {
           localStorage.removeItem('superestrategico_last_sync_cloud_time');
           localStorage.removeItem('superestrategico_last_sync_time_raw');
           setLastSyncCloudTime('');
+          window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
           isSyncingFromCloud.current = false;
           syncedLogIds.current.clear();
           return;
@@ -550,6 +572,7 @@ export default function App() {
       const nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
       setLastSyncCloudTime(nowStr);
       localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+      window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
 
       // Disparar toast de sucesso
       if (syncSuccessTimeoutRef.current) {
@@ -704,7 +727,23 @@ export default function App() {
         const localTimeStr = localStorage.getItem('superestrategico_last_sync_time_raw');
         const localTime = localTimeStr ? parseInt(localTimeStr, 10) : 0;
 
-        if (cloudTime > localTime) {
+        const isCloudEmpty = !data.materias || !Array.isArray(data.materias) || data.materias.length === 0;
+
+        if (force) {
+          // Usuário solicitou sincronização forçada (upload com mesclagem segura de histórico)
+          effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+          setHistorico(effectiveLogs);
+          salvarHistorico(effectiveLogs);
+          await sendDadosToCloud(activeUserId);
+        } else if (isCloudEmpty) {
+          // Escudo de Nuvem Vazia: A nuvem não possui matérias cadastradas.
+          // Não sobrescreve os dados locais e inicializa a nuvem com os dados locais atuais.
+          console.info('Escudo de Nuvem Vazia acionado: Nuvem sem matérias. Inicializando nuvem com dados locais...');
+          effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+          setHistorico(effectiveLogs);
+          salvarHistorico(effectiveLogs);
+          await sendDadosToCloud(activeUserId);
+        } else if (cloudTime > localTime) {
           // Nuvem possui dados mais recentes — atualiza o browser com dados da nuvem
           effectiveLogs = mappedLogs;
           setHistorico(effectiveLogs);
@@ -746,6 +785,7 @@ export default function App() {
           const nowStr = new Date(cloudTime).toLocaleString('pt-BR');
           setLastSyncCloudTime(nowStr);
           localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+          window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
 
           // Se após mesclagem houver logs locais pendentes de envio ao historico_logs, envia delta
           const hasUnsyncedLogs = effectiveLogs.some(l => {
@@ -767,11 +807,11 @@ export default function App() {
               setShowSyncSuccessToast(false);
             }, 2500);
           }
-        } else if (localTime > cloudTime || force) {
+        } else if (localTime > cloudTime) {
           effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
           setHistorico(effectiveLogs);
           salvarHistorico(effectiveLogs);
-          // Browser possui alterações mais recentes OU usuário forçou sincronização: faz upload
+          // Browser possui alterações mais recentes: faz upload
           await sendDadosToCloud(activeUserId);
         } else {
           // cloudTime === localTime: timestamps idênticos
@@ -799,6 +839,7 @@ export default function App() {
             const nowStr = new Date(cloudTime).toLocaleString('pt-BR');
             setLastSyncCloudTime(nowStr);
             localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+            window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
 
             // Disparar toast de sucesso
             if (syncSuccessTimeoutRef.current) {
@@ -857,6 +898,7 @@ export default function App() {
     localStorage.removeItem('superestrategico_last_sync_cloud_time');
     localStorage.removeItem('superestrategico_last_sync_time_raw');
     setLastSyncCloudTime('');
+    window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
     syncedLogIds.current.clear();
     isSyncingFromCloud.current = false;
     
@@ -1220,6 +1262,7 @@ export default function App() {
     localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
     localStorage.setItem('superestrategico_last_sync_time', nowStr);
     setLastSyncCloudTime(nowStr);
+    window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
 
     syncedLogIds.current.clear();
 
@@ -1418,6 +1461,7 @@ export default function App() {
     localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
     localStorage.setItem('superestrategico_last_sync_time', nowStr);
     setLastSyncCloudTime(nowStr);
+    window.dispatchEvent(new Event('superestrategico_last_sync_cloud_time_updated'));
 
     syncedLogIds.current.clear();
 
