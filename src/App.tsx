@@ -320,6 +320,17 @@ export default function App() {
     };
   }, [materias, ciclo, simulados, revisoes, historico, userSession]);
 
+  // Helper para ler e deserializar JSON do localStorage com segurança
+  const getLocalStorageItemJson = (key: string) => {
+    const item = localStorage.getItem(key);
+    if (!item) return null;
+    try {
+      return JSON.parse(item);
+    } catch {
+      return item;
+    }
+  };
+
   // Helper para aplicar configurações salvas no localStorage
   const aplicarConfiguracoesLocais = (conf: any) => {
     if (!conf) return;
@@ -395,16 +406,6 @@ export default function App() {
 
       const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
       const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
-
-      const getLocalStorageItemJson = (key: string) => {
-        const item = localStorage.getItem(key);
-        if (!item) return null;
-        try {
-          return JSON.parse(item);
-        } catch {
-          return item;
-        }
-      };
 
       const configuracoes = {
         timer_segundos: parseInt(localStorage.getItem('superestrategico_timer_segundos') || '0', 10),
@@ -695,9 +696,9 @@ export default function App() {
       });
 
       // Mesclagem segura: mantém todos os logs locais offline e da nuvem
-      const mergedLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
-      setHistorico(mergedLogs);
-      salvarHistorico(mergedLogs);
+      let effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+      setHistorico(effectiveLogs);
+      salvarHistorico(effectiveLogs);
 
       if (data) {
         // Obter timestamps de modificação para saber qual fonte é mais recente
@@ -707,6 +708,12 @@ export default function App() {
 
         if (cloudTime > localTime) {
           // Nuvem possui dados mais recentes — atualiza o browser com dados da nuvem
+          if (Array.isArray(data.historico)) {
+            effectiveLogs = mappedLogs;
+            setHistorico(effectiveLogs);
+            salvarHistorico(effectiveLogs);
+          }
+
           let upgradedMaterias = materiasRef.current;
           if (data.materias && Array.isArray(data.materias) && data.materias.length > 0) {
             upgradedMaterias = ajustarEMesclarMaterias(data.materias);
@@ -745,7 +752,7 @@ export default function App() {
           localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
 
           // Se após mesclagem houver logs locais pendentes de envio ao historico_logs, envia delta
-          const hasUnsyncedLogs = mergedLogs.some(l => {
+          const hasUnsyncedLogs = effectiveLogs.some(l => {
             if (!l || !l.id || typeof l.id !== 'string') return false;
             const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
             const scopedId = `${activeUserId}_${cleanId}`;
@@ -769,7 +776,7 @@ export default function App() {
           await sendDadosToCloud(activeUserId);
         } else {
           // cloudTime === localTime: timestamps idênticos
-          const hasUnsyncedLogs = mergedLogs.some(l => {
+          const hasUnsyncedLogs = effectiveLogs.some(l => {
             if (!l || !l.id || typeof l.id !== 'string') return false;
             const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
             const scopedId = `${activeUserId}_${cleanId}`;
@@ -1045,122 +1052,376 @@ export default function App() {
     setAbaAtiva('edital');
   };
 
-  // Limpar os dados e resetar para recomeçar o edital
+  // Limpar os dados e resetar para recomeçar o edital (Reset Absolutamente Tudo)
   const handleResetarGeral = async (solicitarConfirmacao = true) => {
-    if (!solicitarConfirmacao || confirm("⚠️ ATENÇÃO: Deseja redefinir todo o progresso dos seus estudos para o estado inicial padrão? Isso apagará suas horas estudadas e simulados.")) {
-      // Deletar apenas dados de progresso e histórico
-      localStorage.removeItem('superestrategico_materias');
-      localStorage.removeItem('superestrategico_ciclo');
-      localStorage.removeItem('superestrategico_simulados');
-      localStorage.removeItem('superestrategico_revisoes');
-      localStorage.removeItem('superestrategico_historico');
-      localStorage.removeItem('superestrategico_planejamento_semanal');
-      localStorage.removeItem('superestrategico_last_sync_time');
-      localStorage.removeItem('superestrategico_ia_diagnostico_recente');
-      // Configurações
-      localStorage.removeItem('superestrategico_timer_segundos');
-      localStorage.removeItem('superestrategico_timer_modo_regressivo');
-      localStorage.removeItem('superestrategico_timer_hora_inicio');
-      localStorage.removeItem('superestrategico_timer_hora_fim');
-      localStorage.removeItem('superestrategico_timer_correct_list');
-      localStorage.removeItem('superestrategico_timer_wrong_list');
-      localStorage.removeItem('superestrategico_timer_limite_questoes');
-      localStorage.removeItem('superestrategico_timer_modal_open');
-      localStorage.removeItem('superestrategico_github_token');
-      localStorage.removeItem('superestrategico_github_gist_id');
-      // Timestamps de sync
-      localStorage.removeItem('superestrategico_last_sync_time_raw');
-      localStorage.removeItem('superestrategico_last_sync_cloud_time');
-      
-      syncedLogIds.current.clear();
+    if (solicitarConfirmacao) {
+      if (!confirm("⚠️ ATENÇÃO: Deseja redefinir todo o progresso dos seus estudos para o estado inicial padrão? Isso apagará suas horas estudadas, simulados e configurações.")) {
+        return;
+      }
+    }
 
-      // Se logado com sessão válida, envia dados limpos para a nuvem antes do reload
-      if (isSupabaseConfigured) {
-        const session = await getValidSession();
-        if (session?.access_token && session?.user?.id) {
-          try {
-            await supabase
-              .from('user_data_sync')
-              .upsert({
-                user_id: session.user.id,
-                updated_at: new Date().toISOString(),
-                materias: MATERIAS_PADRAO,
-                ciclo: CICLO_PADRAO,
-                simulados: [],
-                revisoes: [],
-                historico: [],
-                planejamento_semanal: null,
-                configuracoes: {}
-              }, { onConflict: 'user_id' });
+    const isUserLoggedIn = Boolean(userSession?.user?.id);
+    let session: any = null;
+    let activeUserId = userSession?.user?.id;
 
-            // Remove logs de histórico da nuvem também
-            await supabase
-              .from('historico_logs')
-              .delete()
-              .eq('user_id', session.user.id);
-          } catch (err) {
-            console.error('Erro ao redefinir dados gerais na nuvem:', err);
-          }
+    if (isSupabaseConfigured && isUserLoggedIn) {
+      session = await getValidSession();
+      if (!session?.access_token || !session?.user?.id) {
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed?.session?.access_token && refreshed?.session?.user?.id) {
+          session = refreshed.session;
+          setUserSession(session);
+          activeUserId = session.user.id;
         }
       }
 
-      // Marcar como inicializado para evitar carregar o mock data novamente
-      localStorage.setItem('superestrategico_initialized', 'true');
-      
-      window.location.reload();
+      if (!session?.access_token || !session?.user?.id) {
+        alert('⚠️ Sua sessão na nuvem expirou ou é inválida. Por favor, faça login novamente antes de resetar seus dados para que a nuvem também seja limpa com segurança.');
+        return;
+      }
     }
-  };
 
-  // Reset apenas de dados de estudo (histórico, progresso, simulados, revisões, ciclo)
-  const handleResetarDadosEstudo = async () => {
-    // Preserva a configuração da Rotina Semanal (planejamento_semanal)
-    const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
-    const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
+    isSyncingFromCloud.current = true;
+    setIsSyncingCloud(true);
 
-    // Limpa dados de estudo do localStorage
-    localStorage.removeItem('superestrategico_materias');
-    localStorage.removeItem('superestrategico_ciclo');
-    localStorage.removeItem('superestrategico_simulados');
-    localStorage.removeItem('superestrategico_revisoes');
-    localStorage.removeItem('superestrategico_historico');
-    // Reseta timestamps para forçar o próximo sync a enviar dados limpos
-    localStorage.removeItem('superestrategico_last_sync_time_raw');
-    localStorage.removeItem('superestrategico_last_sync_cloud_time');
-    localStorage.setItem('superestrategico_initialized', 'true');
+    let serverTimeMs = Date.now();
+    let nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
 
-    syncedLogIds.current.clear();
+    if (isSupabaseConfigured && session?.user?.id) {
+      activeUserId = session.user.id;
 
-    // Se logado com sessão válida, envia dados limpos para a nuvem antes do reload
-    // para sobrescrever o histórico antigo e evitar que o sync restaure os dados deletados
-    if (isSupabaseConfigured) {
-      const session = await getValidSession();
-      if (session?.access_token && session?.user?.id) {
-        try {
-          await supabase
+      // 1. Deletar todos os registros de historico_logs deste usuário
+      let { error: delErr } = await supabase
+        .from('historico_logs')
+        .delete()
+        .eq('user_id', activeUserId)
+        .select('id');
+
+      if (delErr && isAuthOrRlsError(delErr)) {
+        console.warn('Erro de RLS/Auth ao deletar historico_logs no reset geral, tentando renovar sessão...');
+        const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
+        if (!refErr && refreshed?.session?.user?.id) {
+          session = refreshed.session;
+          setUserSession(session);
+          activeUserId = session.user.id;
+          const retry = await supabase
+            .from('historico_logs')
+            .delete()
+            .eq('user_id', activeUserId)
+            .select('id');
+          delErr = retry.error;
+        }
+      }
+
+      if (delErr) {
+        console.error('Falha ao deletar historico_logs na nuvem:', delErr);
+        isSyncingFromCloud.current = false;
+        setIsSyncingCloud(false);
+        const friendly = getFriendlySyncErrorMessage(delErr);
+        alert(`❌ Erro ao limpar histórico na nuvem: ${friendly.friendly}`);
+        throw new Error(`Erro ao deletar historico_logs: ${delErr.message}`);
+      }
+
+      // 2. Upsert dados limpos na tabela user_data_sync (configurações limpas e planejamento null)
+      let { data: upsertData, error: syncErr } = await supabase
+        .from('user_data_sync')
+        .upsert({
+          user_id: activeUserId,
+          updated_at: new Date().toISOString(),
+          materias: MATERIAS_PADRAO,
+          ciclo: CICLO_PADRAO,
+          simulados: [],
+          revisoes: [],
+          historico: [],
+          planejamento_semanal: null,
+          configuracoes: {}
+        }, { onConflict: 'user_id' })
+        .select('updated_at')
+        .single();
+
+      if (syncErr && isAuthOrRlsError(syncErr)) {
+        console.warn('Erro de RLS/Auth ao atualizar user_data_sync no reset geral, tentando renovar sessão...');
+        const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
+        if (!refErr && refreshed?.session?.user?.id) {
+          session = refreshed.session;
+          setUserSession(session);
+          activeUserId = session.user.id;
+          const retry = await supabase
             .from('user_data_sync')
             .upsert({
-              user_id: session.user.id,
+              user_id: activeUserId,
               updated_at: new Date().toISOString(),
               materias: MATERIAS_PADRAO,
               ciclo: CICLO_PADRAO,
               simulados: [],
               revisoes: [],
               historico: [],
-              planejamento_semanal: planejamentoSemanal
-            }, { onConflict: 'user_id' });
-
-          // Remove logs de histórico da nuvem também
-          await supabase
-            .from('historico_logs')
-            .delete()
-            .eq('user_id', session.user.id);
-        } catch (err) {
-          console.error('Erro ao limpar dados de estudo na nuvem:', err);
+              planejamento_semanal: null,
+              configuracoes: {}
+            }, { onConflict: 'user_id' })
+            .select('updated_at')
+            .single();
+          syncErr = retry.error;
+          upsertData = retry.data;
         }
+      }
+
+      if (syncErr) {
+        console.error('Falha ao atualizar user_data_sync na nuvem:', syncErr);
+        isSyncingFromCloud.current = false;
+        setIsSyncingCloud(false);
+        const friendly = getFriendlySyncErrorMessage(syncErr);
+        alert(`❌ Erro ao atualizar dados limpos na nuvem: ${friendly.friendly}`);
+        throw new Error(`Erro ao atualizar user_data_sync: ${syncErr.message}`);
+      }
+
+      if (upsertData?.updated_at) {
+        serverTimeMs = new Date(upsertData.updated_at).getTime();
+        nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
       }
     }
 
-    window.location.reload();
+    // Limpar configurações do localStorage
+    localStorage.removeItem('superestrategico_planejamento_semanal');
+    localStorage.removeItem('superestrategico_ia_diagnostico_recente');
+    localStorage.removeItem('superestrategico_timer_segundos');
+    localStorage.removeItem('superestrategico_timer_modo_regressivo');
+    localStorage.removeItem('superestrategico_timer_hora_inicio');
+    localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_correct_list');
+    localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_limite_questoes');
+    localStorage.removeItem('superestrategico_timer_modal_open');
+    localStorage.removeItem('superestrategico_github_token');
+    localStorage.removeItem('superestrategico_github_gist_id');
+
+    // Atualizar dados de estudos no localStorage
+    salvarMaterias(MATERIAS_PADRAO);
+    salvarCiclo(CICLO_PADRAO);
+    salvarSimulados([]);
+    salvarRevisoes([]);
+    salvarHistorico([]);
+
+    localStorage.setItem('superestrategico_initialized', 'true');
+    localStorage.setItem('superestrategico_last_sync_time_raw', serverTimeMs.toString());
+    localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+    localStorage.setItem('superestrategico_last_sync_time', nowStr);
+    setLastSyncCloudTime(nowStr);
+
+    syncedLogIds.current.clear();
+
+    // Atualizar React states e refs diretamente
+    setMaterias(MATERIAS_PADRAO);
+    setCiclo(CICLO_PADRAO);
+    setSimulados([]);
+    setRevisoes([]);
+    setHistorico([]);
+
+    materiasRef.current = MATERIAS_PADRAO;
+    cicloRef.current = CICLO_PADRAO;
+    simuladosRef.current = [];
+    revisoesRef.current = [];
+    historicoRef.current = [];
+
+    setIsSyncingCloud(false);
+    setTimeout(() => {
+      isSyncingFromCloud.current = false;
+    }, 1000);
+
+    // Toast de sucesso
+    if (syncSuccessTimeoutRef.current) {
+      clearTimeout(syncSuccessTimeoutRef.current);
+    }
+    setShowSyncSuccessToast(true);
+    syncSuccessTimeoutRef.current = setTimeout(() => {
+      setShowSyncSuccessToast(false);
+    }, 3000);
+  };
+
+  // Reset apenas de dados de estudo (histórico, progresso, simulados, revisões, ciclo)
+  const handleResetarDadosEstudo = async () => {
+    const isUserLoggedIn = Boolean(userSession?.user?.id);
+    let session: any = null;
+    let activeUserId = userSession?.user?.id;
+
+    if (isSupabaseConfigured && isUserLoggedIn) {
+      session = await getValidSession();
+      if (!session?.access_token || !session?.user?.id) {
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed?.session?.access_token && refreshed?.session?.user?.id) {
+          session = refreshed.session;
+          setUserSession(session);
+          activeUserId = session.user.id;
+        }
+      }
+
+      if (!session?.access_token || !session?.user?.id) {
+        alert('⚠️ Sua sessão na nuvem expirou ou é inválida. Por favor, faça login novamente antes de resetar seus dados para que a nuvem também seja limpa com segurança.');
+        return;
+      }
+    }
+
+    isSyncingFromCloud.current = true;
+    setIsSyncingCloud(true);
+
+    let serverTimeMs = Date.now();
+    let nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
+
+    if (isSupabaseConfigured && session?.user?.id) {
+      activeUserId = session.user.id;
+
+      // 1. Deletar todos os registros de historico_logs deste usuário
+      let { error: delErr } = await supabase
+        .from('historico_logs')
+        .delete()
+        .eq('user_id', activeUserId)
+        .select('id');
+
+      if (delErr && isAuthOrRlsError(delErr)) {
+        console.warn('Erro de RLS/Auth ao deletar historico_logs no reset de estudo, tentando renovar sessão...');
+        const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
+        if (!refErr && refreshed?.session?.user?.id) {
+          session = refreshed.session;
+          setUserSession(session);
+          activeUserId = session.user.id;
+          const retry = await supabase
+            .from('historico_logs')
+            .delete()
+            .eq('user_id', activeUserId)
+            .select('id');
+          delErr = retry.error;
+        }
+      }
+
+      if (delErr) {
+        console.error('Falha ao deletar historico_logs na nuvem:', delErr);
+        isSyncingFromCloud.current = false;
+        setIsSyncingCloud(false);
+        const friendly = getFriendlySyncErrorMessage(delErr);
+        alert(`❌ Erro ao limpar histórico na nuvem: ${friendly.friendly}`);
+        throw new Error(`Erro ao limpar historico_logs: ${delErr.message}`);
+      }
+
+      // Preservar planejamento_semanal e configurações do usuário
+      const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
+      const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
+
+      const configuracoes = {
+        timer_segundos: parseInt(localStorage.getItem('superestrategico_timer_segundos') || '0', 10),
+        timer_modo_regressivo: localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true',
+        timer_hora_inicio: localStorage.getItem('superestrategico_timer_hora_inicio'),
+        timer_hora_fim: localStorage.getItem('superestrategico_timer_hora_fim'),
+        timer_correct_list: getLocalStorageItemJson('superestrategico_timer_correct_list') || [],
+        timer_wrong_list: getLocalStorageItemJson('superestrategico_timer_wrong_list') || [],
+        timer_limite_questoes: parseInt(localStorage.getItem('superestrategico_timer_limite_questoes') || '50', 10),
+        timer_modal_open: localStorage.getItem('superestrategico_timer_modal_open') === 'true',
+        ia_diagnostico_recente: localStorage.getItem('superestrategico_ia_diagnostico_recente'),
+        github_token: localStorage.getItem('superestrategico_github_token') || '',
+        github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || '',
+        user_gemini_api_key: localStorage.getItem('superestrategico_user_gemini_api_key') || '',
+        gemini_token_logs: getLocalStorageItemJson('superestrategico_gemini_token_logs') || []
+      };
+
+      // 2. Upsert dados limpos na tabela user_data_sync
+      let { data: upsertData, error: syncErr } = await supabase
+        .from('user_data_sync')
+        .upsert({
+          user_id: activeUserId,
+          updated_at: new Date().toISOString(),
+          materias: MATERIAS_PADRAO,
+          ciclo: CICLO_PADRAO,
+          simulados: [],
+          revisoes: [],
+          historico: [],
+          planejamento_semanal: planejamentoSemanal,
+          configuracoes
+        }, { onConflict: 'user_id' })
+        .select('updated_at')
+        .single();
+
+      if (syncErr && isAuthOrRlsError(syncErr)) {
+        console.warn('Erro de RLS/Auth ao atualizar user_data_sync no reset de estudo, tentando renovar sessão...');
+        const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
+        if (!refErr && refreshed?.session?.user?.id) {
+          session = refreshed.session;
+          setUserSession(session);
+          activeUserId = session.user.id;
+          const retry = await supabase
+            .from('user_data_sync')
+            .upsert({
+              user_id: activeUserId,
+              updated_at: new Date().toISOString(),
+              materias: MATERIAS_PADRAO,
+              ciclo: CICLO_PADRAO,
+              simulados: [],
+              revisoes: [],
+              historico: [],
+              planejamento_semanal: planejamentoSemanal,
+              configuracoes
+            }, { onConflict: 'user_id' })
+            .select('updated_at')
+            .single();
+          syncErr = retry.error;
+          upsertData = retry.data;
+        }
+      }
+
+      if (syncErr) {
+        console.error('Falha ao atualizar user_data_sync na nuvem:', syncErr);
+        isSyncingFromCloud.current = false;
+        setIsSyncingCloud(false);
+        const friendly = getFriendlySyncErrorMessage(syncErr);
+        alert(`❌ Erro ao atualizar dados limpos na nuvem: ${friendly.friendly}`);
+        throw new Error(`Erro ao atualizar user_data_sync: ${syncErr.message}`);
+      }
+
+      if (upsertData?.updated_at) {
+        serverTimeMs = new Date(upsertData.updated_at).getTime();
+        nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
+      }
+    }
+
+    // Atualizar dados de estudos no localStorage
+    salvarMaterias(MATERIAS_PADRAO);
+    salvarCiclo(CICLO_PADRAO);
+    salvarSimulados([]);
+    salvarRevisoes([]);
+    salvarHistorico([]);
+
+    localStorage.setItem('superestrategico_initialized', 'true');
+    localStorage.setItem('superestrategico_last_sync_time_raw', serverTimeMs.toString());
+    localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+    localStorage.setItem('superestrategico_last_sync_time', nowStr);
+    setLastSyncCloudTime(nowStr);
+
+    syncedLogIds.current.clear();
+
+    // Atualizar React states e refs diretamente
+    setMaterias(MATERIAS_PADRAO);
+    setCiclo(CICLO_PADRAO);
+    setSimulados([]);
+    setRevisoes([]);
+    setHistorico([]);
+
+    materiasRef.current = MATERIAS_PADRAO;
+    cicloRef.current = CICLO_PADRAO;
+    simuladosRef.current = [];
+    revisoesRef.current = [];
+    historicoRef.current = [];
+
+    setIsSyncingCloud(false);
+    setTimeout(() => {
+      isSyncingFromCloud.current = false;
+    }, 1000);
+
+    // Toast de confirmação visual
+    if (syncSuccessTimeoutRef.current) {
+      clearTimeout(syncSuccessTimeoutRef.current);
+    }
+    setShowSyncSuccessToast(true);
+    syncSuccessTimeoutRef.current = setTimeout(() => {
+      setShowSyncSuccessToast(false);
+    }, 3000);
   };
 
   // Reset apenas de configurações do usuário (timer, GitHub, IA, etc.)

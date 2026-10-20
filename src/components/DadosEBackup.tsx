@@ -54,7 +54,7 @@ interface DadosEBackupProps {
   revisoes: RevisaoEspacada[];
   historico: LogSessao[];
   onImportBackup: (backup: AppBackup) => void;
-  onResetGeral: (confirmar?: boolean) => void;
+  onResetGeral: (confirmar?: boolean) => Promise<void> | void;
   onResetDadosEstudo: () => Promise<void>;
   onResetConfiguracoes: () => void;
   onSalvarMaterias: (materias: Materia[]) => void;
@@ -124,6 +124,7 @@ export default function DadosEBackup({
   const [resetEstudoInput, setResetEstudoInput] = useState<string>('');
   const [resetConfigInput, setResetConfigInput] = useState<string>('');
   const [isResettingEstudo, setIsResettingEstudo] = useState(false);
+  const [isResettingCompleto, setIsResettingCompleto] = useState(false);
   const [configResetSuccess, setConfigResetSuccess] = useState(false);
 
   // Gemini API Key Personal States
@@ -617,19 +618,39 @@ export default function DadosEBackup({
   };
 
   // 6. RESET HANDLERS
-  const handleConfirmarResetCompleto = () => {
+  const handleConfirmarResetCompleto = async () => {
     if (resetConfirmInput.trim().toUpperCase() !== 'RESETAR') {
       alert('Por favor, digite a palavra "RESETAR" corretamente para prosseguir.');
       return;
     }
-    onResetGeral(false);
+    setIsResettingCompleto(true);
+    try {
+      await onResetGeral(false);
+      setSuccessMsg('✅ Todos os dados e configurações foram redefinidos com sucesso na nuvem e localmente!');
+      setResetConfirmInput('');
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Erro ao redefinir tudo.');
+      setTimeout(() => setErrorMsg(''), 6000);
+    } finally {
+      setIsResettingCompleto(false);
+    }
   };
 
   const handleConfirmarResetEstudo = async () => {
     if (resetEstudoInput.trim().toUpperCase() !== 'ESTUDOS') return;
     setIsResettingEstudo(true);
-    await onResetDadosEstudo();
-    setIsResettingEstudo(false);
+    try {
+      await onResetDadosEstudo();
+      setSuccessMsg('✅ Dados de estudo resetados com sucesso na nuvem e localmente!');
+      setResetEstudoInput('');
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Erro ao resetar dados de estudo.');
+      setTimeout(() => setErrorMsg(''), 6000);
+    } finally {
+      setIsResettingEstudo(false);
+    }
   };
 
   const handleConfirmarResetConfig = () => {
@@ -1471,7 +1492,7 @@ export default function DadosEBackup({
                 className="w-full flex items-center justify-center gap-1.5 px-4 py-2 bg-rose-950/10 hover:bg-rose-700 hover:text-white border border-rose-500/30 text-rose-400 font-bold text-xs rounded transition-all cursor-pointer disabled:opacity-30 disabled:hover:bg-rose-950/10 disabled:hover:text-rose-400"
               >
                 <Trash2 size={12} />
-                {isResettingEstudo ? 'Limpando nuvem e reiniciando...' : 'Resetar Dados de Estudo'}
+                {isResettingEstudo ? 'Limpando nuvem e dados...' : 'Resetar Dados de Estudo'}
               </button>
             </div>
 
@@ -1521,6 +1542,7 @@ export default function DadosEBackup({
                   <p className="text-xs font-bold text-rose-500 font-mono uppercase tracking-wide">Resetar Absolutamente Tudo</p>
                   <p className="text-[10px] text-[#64748B] mt-1 leading-relaxed">
                     Apaga dados de estudo + todas as configurações. Retorna ao estado inicial.
+                    {isLoggedIn && <span className="text-amber-400 block mt-1">⚡ Logado: a nuvem também será limpa antes do reset.</span>}
                   </p>
                 </div>
               </div>
@@ -1538,11 +1560,11 @@ export default function DadosEBackup({
               </div>
               <button
                 onClick={handleConfirmarResetCompleto}
-                disabled={resetConfirmInput.trim().toUpperCase() !== 'RESETAR'}
+                disabled={resetConfirmInput.trim().toUpperCase() !== 'RESETAR' || isResettingCompleto}
                 className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 bg-rose-950/10 hover:bg-rose-600 hover:text-black border border-rose-500/30 text-rose-400 font-bold text-xs rounded transition-all cursor-pointer disabled:opacity-30 disabled:hover:bg-rose-950/10 disabled:hover:text-rose-400"
               >
                 <Trash2 size={13} />
-                Confirmar e Resetar Absolutamente Tudo
+                {isResettingCompleto ? 'Limpando nuvem e dados...' : 'Confirmar e Resetar Absolutamente Tudo'}
               </button>
             </div>
 
