@@ -61,7 +61,7 @@ interface DadosEBackupProps {
   userEmail?: string;
   onOpenAuth: () => void;
   onLogout: () => void;
-  onSyncCloud: () => Promise<void>;
+  onSyncCloud: () => Promise<boolean | void>;
   isSyncingCloud?: boolean;
   lastSyncCloudTime?: string;
   isLoggedIn?: boolean;
@@ -102,9 +102,7 @@ export default function DadosEBackup({
   });
 
   useEffect(() => {
-    if (lastSyncCloudTime) {
-      setEffectiveCloudSyncTime(lastSyncCloudTime);
-    }
+    setEffectiveCloudSyncTime(lastSyncCloudTime || localStorage.getItem('superestrategico_last_sync_cloud_time') || '');
   }, [lastSyncCloudTime]);
 
   useEffect(() => {
@@ -305,22 +303,31 @@ export default function DadosEBackup({
       localStorage.setItem('superestrategico_historico', JSON.stringify(historico));
 
       const now = new Date().toLocaleString('pt-BR');
+      const nowMs = Date.now();
       localStorage.setItem('superestrategico_last_sync_time', now);
+      localStorage.setItem('superestrategico_last_sync_time_raw', nowMs.toString());
       setLastSyncTime(now);
 
+      let cloudOk = false;
       if (isLoggedIn && onSyncCloud) {
         try {
-          await onSyncCloud();
+          const res = await onSyncCloud();
+          cloudOk = res !== false;
         } catch (cloudErr: any) {
           console.warn('Erro ao sincronizar com nuvem durante sincronização local:', cloudErr);
+          cloudOk = false;
         }
       }
 
-      setSuccessMsg(
-        isLoggedIn
-          ? '⚡ Banco de dados local e nuvem Supabase sincronizados com sucesso!'
-          : '⚡ Banco de dados local sincronizado e otimizado com sucesso!'
-      );
+      if (isLoggedIn && !cloudOk) {
+        setSuccessMsg('⚡ Banco de dados local salvo com sucesso! (Nuvem não sincronizada - verifique sua conexão ou login)');
+      } else {
+        setSuccessMsg(
+          isLoggedIn
+            ? '⚡ Banco de dados local e nuvem Supabase sincronizados com sucesso!'
+            : '⚡ Banco de dados local sincronizado e otimizado com sucesso!'
+        );
+      }
       setTimeout(() => setSuccessMsg(''), 5000);
     } finally {
       setIsSyncingLocal(false);

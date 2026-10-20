@@ -140,16 +140,13 @@ export default function App() {
           setUserSession(session);
         } else {
           console.warn('refreshSession falhou:', refreshErr);
-          const isHardExpired = session.expires_at && (session.expires_at * 1000 <= Date.now());
-          if (isHardExpired) {
-            setUserSession(null);
-            setSyncError({
-              friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
-              technical: `Sessão expirada em ${new Date(session.expires_at * 1000).toLocaleString('pt-BR')} e token refresh falhou.`
-            });
-            setShowAuthModal(true);
-            return null;
-          }
+          setUserSession(null);
+          setSyncError({
+            friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+            technical: `Sessão expirada ou inválida (${refreshErr?.message || 'Token refresh falhou'}).`
+          });
+          setShowAuthModal(true);
+          return null;
         }
       }
 
@@ -417,6 +414,12 @@ export default function App() {
     const session = await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
+      setUserSession(null);
+      setSyncError({
+        friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+        technical: "Sessão inválida ou expirada."
+      });
+      setShowAuthModal(true);
       return false;
     }
 
@@ -486,6 +489,12 @@ export default function App() {
           upsertData = retry.data;
         } else {
           console.warn('Token expirado não pôde ser renovado na nuvem.');
+          setUserSession(null);
+          setSyncError({
+            friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+            technical: `Erro de renovação de sessão: ${refreshErr?.message || 'Token inválido'}`
+          });
+          setShowAuthModal(true);
           return false;
         }
       }
@@ -493,6 +502,12 @@ export default function App() {
       // Se o erro de RLS/Auth persistir mesmo após o retry
       if (isAuthOrRlsError(error)) {
         console.warn('Erro de RLS/Auth persistiu após tentativa de renovação.');
+        setUserSession(null);
+        setSyncError({
+          friendly: "Sua sessão com o Supabase expirou ou foi invalidada. Faça login novamente.",
+          technical: `Erro de RLS/Auth: ${error?.message || '42501'}`
+        });
+        setShowAuthModal(true);
         return false;
       }
 
@@ -544,11 +559,20 @@ export default function App() {
               .from('historico_logs')
               .upsert(logsPayload.map(lp => ({ ...lp, user_id: activeUserId })), { onConflict: 'id' });
             logsError = retryLogs.error;
+          } else {
+            setUserSession(null);
+            setSyncError({
+              friendly: "Sua sessão com o Supabase expirou ao enviar histórico de estudos. Faça login novamente.",
+              technical: `Erro de renovação de sessão: ${refreshLogsErr?.message || 'Token inválido'}`
+            });
+            setShowAuthModal(true);
+            return false;
           }
         }
 
         if (logsError) {
           console.warn('Aviso ao sincronizar historico_logs com a nuvem:', logsError);
+          setSyncError(getFriendlySyncErrorMessage(logsError));
           return false;
         } else {
           // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
@@ -586,9 +610,7 @@ export default function App() {
       return true;
     } catch (err: any) {
       console.warn('Aviso ao enviar dados para o Supabase:', err);
-      if (!isAuthOrRlsError(err)) {
-        setSyncError(getFriendlySyncErrorMessage(err));
-      }
+      setSyncError(getFriendlySyncErrorMessage(err));
       return false;
     } finally {
       setIsSyncingCloud(false);
@@ -596,9 +618,9 @@ export default function App() {
   };
 
   // Função para carregar e sincronizar dados da nuvem do Supabase
-  const syncDadosFromCloud = async (userId: string, force = false): Promise<void> => {
-    if (!isSupabaseConfigured) return;
-    if (isSyncingFromCloud.current && !force) return;
+  const syncDadosFromCloud = async (userId: string, force = false): Promise<boolean> => {
+    if (!isSupabaseConfigured) return false;
+    if (isSyncingFromCloud.current && !force) return false;
     isSyncingFromCloud.current = true;
 
     try {
@@ -609,7 +631,13 @@ export default function App() {
       const session = await getValidSession();
       if (!session || !session.access_token || !session.user?.id) {
         console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-        return;
+        setUserSession(null);
+        setSyncError({
+          friendly: "Sua sessão com o Supabase expirou. Faça login novamente para sincronizar com a nuvem.",
+          technical: "Sessão inválida ou expirada."
+        });
+        setShowAuthModal(true);
+        return false;
       }
 
       let activeUserId = session.user.id;
@@ -637,14 +665,26 @@ export default function App() {
           error = retry.error;
         } else {
           console.warn('syncDadosFromCloud: sessão expirada não pôde ser renovada.');
-          return;
+          setUserSession(null);
+          setSyncError({
+            friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+            technical: `Erro de renovação de sessão: ${refreshErr?.message || 'Token inválido'}`
+          });
+          setShowAuthModal(true);
+          return false;
         }
       }
 
-      // Se ainda for erro de RLS ou autenticação após retry, aborta silenciosamente sem disparar toast de erro
+      // Se ainda for erro de RLS ou autenticação após retry, aborta notificando o usuário
       if (isAuthOrRlsError(error)) {
         console.warn('syncDadosFromCloud: erro de RLS/autenticação persistiu ao carregar dados:', error);
-        return;
+        setUserSession(null);
+        setSyncError({
+          friendly: "Sua sessão com o Supabase expirou ou foi invalidada. Faça login novamente.",
+          technical: `Erro de RLS/Auth: ${error?.message || '42501'}`
+        });
+        setShowAuthModal(true);
+        return false;
       }
 
       // PGRST116: Registro não encontrado na nuvem
@@ -653,11 +693,11 @@ export default function App() {
         console.info('Usuário sem registro no Supabase (PGRST116). Semeando dados iniciais para a nuvem...');
         const validSession = await getValidSession();
         if (validSession && validSession.access_token && validSession.user?.id) {
-          await sendDadosToCloud(activeUserId);
+          return await sendDadosToCloud(activeUserId);
         } else {
           console.warn('syncDadosFromCloud: semeamento cancelado por ausência de sessão válida.');
+          return false;
         }
-        return;
       }
 
       if (error) {
@@ -674,7 +714,10 @@ export default function App() {
       if (logsError) {
         console.warn('syncDadosFromCloud: aviso ao buscar historico_logs:', logsError);
         if (isAuthOrRlsError(logsError)) {
-          return;
+          setUserSession(null);
+          setSyncError(getFriendlySyncErrorMessage(logsError));
+          setShowAuthModal(true);
+          return false;
         }
       }
 
@@ -729,45 +772,46 @@ export default function App() {
 
         const isCloudEmpty = !data.materias || !Array.isArray(data.materias) || data.materias.length === 0;
 
-        if (force) {
-          // Usuário solicitou sincronização forçada (upload com mesclagem segura de histórico)
-          effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
-          setHistorico(effectiveLogs);
-          salvarHistorico(effectiveLogs);
-          await sendDadosToCloud(activeUserId);
-        } else if (isCloudEmpty) {
+        if (isCloudEmpty) {
           // Escudo de Nuvem Vazia: A nuvem não possui matérias cadastradas.
           // Não sobrescreve os dados locais e inicializa a nuvem com os dados locais atuais.
           console.info('Escudo de Nuvem Vazia acionado: Nuvem sem matérias. Inicializando nuvem com dados locais...');
           effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+          historicoRef.current = effectiveLogs;
           setHistorico(effectiveLogs);
           salvarHistorico(effectiveLogs);
-          await sendDadosToCloud(activeUserId);
-        } else if (cloudTime > localTime) {
-          // Nuvem possui dados mais recentes — atualiza o browser com dados da nuvem
+          return await sendDadosToCloud(activeUserId);
+        } else if (localTime === 0 || (cloudTime > localTime && !force)) {
+          // Nuvem possui dados mais recentes OU browser é novo/limpo (localTime === 0):
+          // Baixa os dados da nuvem para o navegador
           effectiveLogs = mappedLogs;
+          historicoRef.current = effectiveLogs;
           setHistorico(effectiveLogs);
           salvarHistorico(effectiveLogs);
 
           let upgradedMaterias = materiasRef.current;
           if (data.materias && Array.isArray(data.materias) && data.materias.length > 0) {
             upgradedMaterias = ajustarEMesclarMaterias(data.materias);
+            materiasRef.current = upgradedMaterias;
             setMaterias(upgradedMaterias);
             salvarMaterias(upgradedMaterias);
           }
 
           if (data.ciclo && data.ciclo.itens) {
             const upgradedCiclo = ajustarEMesclarCiclo(data.ciclo, upgradedMaterias);
+            cicloRef.current = upgradedCiclo;
             setCiclo(upgradedCiclo);
             salvarCiclo(upgradedCiclo);
           }
 
           if (data.simulados && Array.isArray(data.simulados)) {
+            simuladosRef.current = data.simulados;
             setSimulados(data.simulados);
             salvarSimulados(data.simulados);
           }
 
           if (data.revisoes && Array.isArray(data.revisoes)) {
+            revisoesRef.current = data.revisoes;
             setRevisoes(data.revisoes);
             salvarRevisoes(data.revisoes);
           }
@@ -796,7 +840,7 @@ export default function App() {
           });
 
           if (hasUnsyncedLogs) {
-            await sendDadosToCloud(activeUserId);
+            return await sendDadosToCloud(activeUserId);
           } else {
             // Disparar toast de sucesso
             if (syncSuccessTimeoutRef.current) {
@@ -806,21 +850,26 @@ export default function App() {
             syncSuccessTimeoutRef.current = setTimeout(() => {
               setShowSyncSuccessToast(false);
             }, 2500);
+            return true;
           }
-        } else if (localTime > cloudTime) {
+        } else if (localTime > cloudTime || force) {
+          // Browser possui alterações mais recentes OU usuário forçou sincronização:
+          // Faz merge do histórico e upload dos dados para a nuvem
           effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+          historicoRef.current = effectiveLogs;
           setHistorico(effectiveLogs);
           salvarHistorico(effectiveLogs);
-          // Browser possui alterações mais recentes: faz upload
-          await sendDadosToCloud(activeUserId);
+          return await sendDadosToCloud(activeUserId);
         } else {
           // cloudTime === localTime: timestamps idênticos
           if (Array.isArray(data.historico) && data.historico.length === 0 && mappedLogs.length === 0) {
             effectiveLogs = [];
+            historicoRef.current = [];
             setHistorico([]);
             salvarHistorico([]);
           } else {
             effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+            historicoRef.current = effectiveLogs;
             setHistorico(effectiveLogs);
             salvarHistorico(effectiveLogs);
           }
@@ -833,7 +882,7 @@ export default function App() {
           });
 
           if (hasUnsyncedLogs) {
-            await sendDadosToCloud(activeUserId);
+            return await sendDadosToCloud(activeUserId);
           } else {
             localStorage.setItem('superestrategico_last_sync_time_raw', cloudTime.toString());
             const nowStr = new Date(cloudTime).toLocaleString('pt-BR');
@@ -849,18 +898,17 @@ export default function App() {
             syncSuccessTimeoutRef.current = setTimeout(() => {
               setShowSyncSuccessToast(false);
             }, 2500);
+            return true;
           }
         }
       } else {
         // Se data não existe mas não retornou erro PGRST116, envia dados locais
-        await sendDadosToCloud(activeUserId);
+        return await sendDadosToCloud(activeUserId);
       }
     } catch (err: any) {
       console.warn('Aviso ao sincronizar dados da nuvem Supabase:', err);
-      if (isAuthOrRlsError(err)) {
-        return;
-      }
       setSyncError(getFriendlySyncErrorMessage(err));
+      return false;
     } finally {
       setIsSyncingCloud(false);
       setTimeout(() => {
@@ -870,20 +918,22 @@ export default function App() {
   };
 
   // Função unificada e inteligente para o botão "Forçar Sincronismo na Nuvem"
-  const handleForcarSincronismoCloud = async () => {
-    if (!isSupabaseConfigured) return;
+  const handleForcarSincronismoCloud = async (): Promise<boolean> => {
+    if (!isSupabaseConfigured) return false;
 
     const session = await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
       setShowAuthModal(true);
-      return;
+      return false;
     }
 
     try {
       setIsSyncingCloud(true);
-      await syncDadosFromCloud(session.user.id, true);
+      return await syncDadosFromCloud(session.user.id, true);
     } catch (err: any) {
       console.warn('Erro ao forçar sincronização com a nuvem:', err);
+      setSyncError(getFriendlySyncErrorMessage(err));
+      return false;
     } finally {
       setIsSyncingCloud(false);
     }
@@ -924,28 +974,38 @@ export default function App() {
       };
     });
 
+    materiasRef.current = novasMaterias;
     setMaterias(novasMaterias);
     salvarMaterias(novasMaterias);
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
   };
 
   const handleSalvarMaterias = (novasMaterias: Materia[]) => {
+    materiasRef.current = novasMaterias;
     setMaterias(novasMaterias);
     salvarMaterias(novasMaterias);
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
   };
 
   const handleSalvarCiclo = (novoCiclo: CicloEstudo) => {
+    cicloRef.current = novoCiclo;
     setCiclo(novoCiclo);
     salvarCiclo(novoCiclo);
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
   };
 
   const handleSalvarSimulados = (novosSimulados: Simulado[]) => {
+    simuladosRef.current = novosSimulados;
     setSimulados(novosSimulados);
     salvarSimulados(novosSimulados);
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
   };
 
   const handleSalvarRevisoes = (novasRevisoes: RevisaoEspacada[]) => {
+    revisoesRef.current = novasRevisoes;
     setRevisoes(novasRevisoes);
     salvarRevisoes(novasRevisoes);
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
   };
 
   const handleImportarEditalCompleto = (
@@ -956,6 +1016,7 @@ export default function App() {
     simuladoDist: any
   ) => {
     // 1. Atualizar matérias
+    materiasRef.current = novasMaterias;
     setMaterias(novasMaterias);
     salvarMaterias(novasMaterias);
 
@@ -971,6 +1032,7 @@ export default function App() {
       })),
       itemAtualIndice: 0
     };
+    cicloRef.current = cicloAtualizado;
     setCiclo(cicloAtualizado);
     salvarCiclo(cicloAtualizado);
 
@@ -999,9 +1061,12 @@ export default function App() {
       };
       
       const novosSimulados = [templateSimulado, ...simulados];
+      simuladosRef.current = novosSimulados;
       setSimulados(novosSimulados);
       salvarSimulados(novosSimulados);
     }
+
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
 
     // 4. Alternar para o Painel Geral
     setAbaAtiva('painel');
@@ -1016,6 +1081,7 @@ export default function App() {
     };
 
     const historicoAtualizado = [novoLog, ...historico];
+    historicoRef.current = historicoAtualizado;
     setHistorico(historicoAtualizado);
     salvarHistorico(historicoAtualizado);
 
@@ -1064,6 +1130,7 @@ export default function App() {
       };
     });
 
+    materiasRef.current = novasMaterias;
     setMaterias(novasMaterias);
     salvarMaterias(novasMaterias);
 
@@ -1092,9 +1159,12 @@ export default function App() {
       };
 
       const novasRevisoes = [...revisoes, novaRevisaoAuto];
+      revisoesRef.current = novasRevisoes;
       setRevisoes(novasRevisoes);
       salvarRevisoes(novasRevisoes);
     }
+
+    localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
   };
 
   // Navegar direto para matéria do Edital quando clica no Dashboard
