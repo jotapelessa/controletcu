@@ -19,13 +19,25 @@ import CorrecaoRedacao from './components/CorrecaoRedacao';
 import AnalisadorEditalTab from './components/AnalisadorEditalTab';
 
 export default function App() {
-  // Estados Globais da Aplicação
-  const [materias, setMaterias] = useState<Materia[]>([]);
-  const [ciclo, setCiclo] = useState<CicloEstudo | null>(null);
-  const [simulados, setSimulados] = useState<Simulado[]>([]);
-  const [revisoes, setRevisoes] = useState<RevisaoEspacada[]>([]);
-  const [historico, setHistorico] = useState<LogSessao[]>([]);
+  // Estados Globais da Aplicação (inicializados diretamente do localStorage / padrões para evitar estados vazios no mount)
+  const [materias, setMaterias] = useState<Materia[]>(() => carregarDadosIniciais().materias);
+  const [ciclo, setCiclo] = useState<CicloEstudo | null>(() => carregarDadosIniciais().ciclo);
+  const [simulados, setSimulados] = useState<Simulado[]>(() => carregarDadosIniciais().simulados);
+  const [revisoes, setRevisoes] = useState<RevisaoEspacada[]>(() => carregarDadosIniciais().revisoes);
+  const [historico, setHistorico] = useState<LogSessao[]>(() => carregarDadosIniciais().historico);
   const [materiaEditalAtivaId, setMateriaEditalAtivaId] = useState<string | undefined>(undefined);
+
+  // Refs sincronizadas para evitar problemas de stale closure em callbacks assíncronos de sync
+  const materiasRef = useRef(materias);
+  materiasRef.current = materias;
+  const cicloRef = useRef(ciclo);
+  cicloRef.current = ciclo;
+  const simuladosRef = useRef(simulados);
+  simuladosRef.current = simulados;
+  const revisoesRef = useRef(revisoes);
+  revisoesRef.current = revisoes;
+  const historicoRef = useRef(historico);
+  historicoRef.current = historico;
 
   // Estados do Supabase Cloud Sync
   const [userSession, setUserSession] = useState<any>(null);
@@ -170,13 +182,6 @@ export default function App() {
 
   // Carregar dados no mount e gerenciar autenticação
   useEffect(() => {
-    const dados = carregarDadosIniciais();
-    setMaterias(dados.materias);
-    setCiclo(dados.ciclo);
-    setSimulados(dados.simulados);
-    setRevisoes(dados.revisoes);
-    setHistorico(dados.historico);
-
     // Carrega o CMS
     if (isSupabaseConfigured) {
       supabase
@@ -228,8 +233,10 @@ export default function App() {
           setUserProfile(null);
           setSyncError(null);
           localStorage.removeItem('superestrategico_last_sync_cloud_time');
+          localStorage.removeItem('superestrategico_last_sync_time_raw');
           setLastSyncCloudTime('');
           isSyncingFromCloud.current = false;
+          syncedLogIds.current.clear();
           return;
         }
 
@@ -317,9 +324,30 @@ export default function App() {
     }
   };
 
+  // Helper para mesclar histórico de estudos sem perder sessões locais ou da nuvem
+  const mergeHistoricoLogs = (localLogs: LogSessao[], cloudLogs: LogSessao[], userId: string): LogSessao[] => {
+    const map = new Map<string, LogSessao>();
+
+    for (const l of localLogs) {
+      if (!l || !l.id) continue;
+      const cleanId = l.id.startsWith(`${userId}_`) ? l.id.slice(userId.length + 1) : l.id;
+      map.set(cleanId, { ...l, id: l.id });
+    }
+
+    for (const c of cloudLogs) {
+      if (!c || !c.id) continue;
+      const cleanId = c.id.startsWith(`${userId}_`) ? c.id.slice(userId.length + 1) : c.id;
+      map.set(cleanId, { ...c, id: c.id });
+    }
+
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.data || 0).getTime() - new Date(a.data || 0).getTime()
+    );
+  };
+
   // Função para enviar os dados atuais ao Supabase
-  const sendDadosToCloud = async (userId?: string) => {
-    if (!isSupabaseConfigured) return;
+  const sendDadosToCloud = async (userId?: string): Promise<boolean> => {
+    if (!isSupabaseConfigured) return false;
 
     // 1. Obter e validar estritamente a sessão ativa antes de fazer qualquer chamada
     const session = await getValidSession();
@@ -327,7 +355,7 @@ export default function App() {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
       setUserSession(null);
       setUserProfile(null);
-      return;
+      return false;
     }
 
     const activeUserId = session.user.id;
@@ -364,22 +392,31 @@ export default function App() {
         user_gemini_api_key: localStorage.getItem('superestrategico_user_gemini_api_key') || '',
         gemini_token_logs: getLocalStorageItemJson('superestrategico_gemini_token_logs') || []
       };
+
+      // Sempre usar dados atuais das refs com fallback para valores padrão seguros
+      const currentMaterias = materiasRef.current && materiasRef.current.length > 0 ? materiasRef.current : carregarDadosIniciais().materias;
+      const currentCiclo = cicloRef.current || carregarDadosIniciais().ciclo;
+      const currentSimulados = simuladosRef.current ?? [];
+      const currentRevisoes = revisoesRef.current ?? [];
+      const currentHistorico = historicoRef.current ?? [];
       
       const payload = {
         user_id: activeUserId,
         updated_at: new Date().toISOString(),
-        materias: materias ?? [],
-        ciclo: ciclo ?? {},
-        simulados: simulados ?? [],
-        revisoes: revisoes ?? [],
-        historico: historico ?? [], // Mantém snapshot completo no user_data_sync
+        materias: currentMaterias,
+        ciclo: currentCiclo,
+        simulados: currentSimulados,
+        revisoes: currentRevisoes,
+        historico: currentHistorico, // Mantém snapshot completo no user_data_sync
         planejamento_semanal: planejamentoSemanal,
         configuracoes
       };
 
-      let { error } = await supabase
+      let { data: upsertData, error } = await supabase
         .from('user_data_sync')
-        .upsert(payload, { onConflict: 'user_id' });
+        .upsert(payload, { onConflict: 'user_id' })
+        .select('updated_at')
+        .single();
 
       // Se a sessão expirou durante a requisição (erro 42501 RLS), tenta renovar o token via refreshSession e retenta
       if (
@@ -396,29 +433,35 @@ export default function App() {
           setUserSession(refreshed.session);
           const retry = await supabase
             .from('user_data_sync')
-            .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' });
+            .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' })
+            .select('updated_at')
+            .single();
           error = retry.error;
+          upsertData = retry.data;
         } else {
           console.warn('Token expirado não pôde ser renovado na nuvem.');
-          return;
+          return false;
         }
       }
 
       if (error) {
         console.warn('Aviso: envio de dados para a nuvem não concluído:', error);
-        return;
+        setSyncError(getFriendlySyncErrorMessage(error));
+        return false;
       }
 
       // Sincronizar novos logs locais com a tabela historico_logs (delta sync)
       // Prefixar IDs com activeUserId para evitar conflito RLS 42501 entre usuários
-      const unsyncedLogs = historico.filter(log => {
-        const scopedId = `${activeUserId}_${log.id.replace(activeUserId + '_', '')}`;
-        return !syncedLogIds.current.has(log.id) && !syncedLogIds.current.has(scopedId);
+      const unsyncedLogs = currentHistorico.filter(log => {
+        const cleanId = log.id.startsWith(`${activeUserId}_`) ? log.id.slice(activeUserId.length + 1) : log.id;
+        const scopedId = `${activeUserId}_${cleanId}`;
+        return !syncedLogIds.current.has(cleanId) && !syncedLogIds.current.has(scopedId) && !syncedLogIds.current.has(log.id);
       });
 
       if (unsyncedLogs.length > 0) {
         const logsPayload = unsyncedLogs.map(p => {
-          const scopedId = `${activeUserId}_${p.id.replace(activeUserId + '_', '')}`;
+          const cleanId = p.id.startsWith(`${activeUserId}_`) ? p.id.slice(activeUserId.length + 1) : p.id;
+          const scopedId = `${activeUserId}_${cleanId}`;
           return {
             id: scopedId,
             user_id: activeUserId,
@@ -443,17 +486,23 @@ export default function App() {
         } else {
           // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
           unsyncedLogs.forEach(log => {
+            const cleanId = log.id.startsWith(`${activeUserId}_`) ? log.id.slice(activeUserId.length + 1) : log.id;
+            const scopedId = `${activeUserId}_${cleanId}`;
+            syncedLogIds.current.add(cleanId);
+            syncedLogIds.current.add(scopedId);
             syncedLogIds.current.add(log.id);
-            syncedLogIds.current.add(`${activeUserId}_${log.id.replace(activeUserId + '_', '')}`);
           });
         }
       }
 
-      // Gravar timestamp local
-      const nowRaw = Date.now();
-      localStorage.setItem('superestrategico_last_sync_time_raw', nowRaw.toString());
+      // Gravar timestamp exato retornado pelo Supabase no banco (elimina falsos deltas por clock skew)
+      const serverTimeMs = upsertData?.updated_at
+        ? new Date(upsertData.updated_at).getTime()
+        : Date.now();
+
+      localStorage.setItem('superestrategico_last_sync_time_raw', serverTimeMs.toString());
       
-      const nowStr = new Date(nowRaw).toLocaleString('pt-BR');
+      const nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
       setLastSyncCloudTime(nowStr);
       localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
 
@@ -465,32 +514,35 @@ export default function App() {
       syncSuccessTimeoutRef.current = setTimeout(() => {
         setShowSyncSuccessToast(false);
       }, 2500);
+
+      return true;
     } catch (err: any) {
       console.warn('Aviso ao enviar dados para o Supabase:', err);
+      setSyncError(getFriendlySyncErrorMessage(err));
+      return false;
     } finally {
       setIsSyncingCloud(false);
     }
   };
 
   // Função para carregar e sincronizar dados da nuvem do Supabase
-  const syncDadosFromCloud = async (userId: string) => {
+  const syncDadosFromCloud = async (userId: string, force = false): Promise<void> => {
     if (!isSupabaseConfigured) return;
-    if (isSyncingFromCloud.current) return;
+    if (isSyncingFromCloud.current && !force) return;
     isSyncingFromCloud.current = true;
-
-    // 1. Garantir que uma sessão autenticada válida existe antes de consultar
-    const session = await getValidSession();
-    if (!session || !session.user?.id) {
-      console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      isSyncingFromCloud.current = false;
-      return;
-    }
-
-    const activeUserId = session.user.id;
 
     try {
       setIsSyncingCloud(true);
       setSyncError(null);
+
+      // 1. Garantir que uma sessão autenticada válida existe antes de consultar
+      const session = await getValidSession();
+      if (!session || !session.user?.id) {
+        console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
+        return;
+      }
+
+      const activeUserId = session.user.id;
       
       // Buscar dados de configurações do usuário
       const { data, error } = await supabase
@@ -526,11 +578,12 @@ export default function App() {
         throw error;
       }
 
-      // Buscar logs de histórico normalizados
+      // Buscar logs de histórico normalizados ordenados por data decrescente
       const { data: dbLogs, error: logsError } = await supabase
         .from('historico_logs')
         .select('*')
-        .eq('user_id', activeUserId);
+        .eq('user_id', activeUserId)
+        .order('data', { ascending: false });
 
       if (logsError) {
         console.warn('syncDadosFromCloud: aviso ao buscar historico_logs:', logsError);
@@ -544,8 +597,8 @@ export default function App() {
         aulaId: p.aula_id || '',
         duracaoMinutos: p.duracao_minutos,
         questoesResolvidas: p.questoes_resolvidas,
-        questoesAcertadas: p.questoes_acertadas,
-        questoesErradas: p.questoes_erradas,
+        questoesAcertadas: p.questoesAcertadas,
+        questoesErradas: p.questoesErradas,
         tipo: p.tipo as any,
         comentarios: p.comentarios || undefined
       }));
@@ -566,18 +619,29 @@ export default function App() {
         }));
       }
 
-      // Ordenar por data decrescente (mais recente primeiro)
-      mappedLogs.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
+      // Registrar todos os logs vindos da nuvem em syncedLogIds para nunca duplicar
+      mappedLogs.forEach(l => {
+        const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
+        const scopedId = `${activeUserId}_${cleanId}`;
+        syncedLogIds.current.add(cleanId);
+        syncedLogIds.current.add(scopedId);
+        syncedLogIds.current.add(l.id);
+      });
+
+      // Mesclagem segura: mantém todos os logs locais offline e da nuvem
+      const mergedLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+      setHistorico(mergedLogs);
+      salvarHistorico(mergedLogs);
 
       if (data) {
         // Obter timestamps de modificação para saber qual fonte é mais recente
-        const cloudTime = new Date(data.updated_at).getTime();
+        const cloudTime = !isNaN(new Date(data.updated_at).getTime()) ? new Date(data.updated_at).getTime() : 0;
         const localTimeStr = localStorage.getItem('superestrategico_last_sync_time_raw');
         const localTime = localTimeStr ? parseInt(localTimeStr, 10) : 0;
 
         if (cloudTime > localTime) {
           // Nuvem possui dados mais recentes — atualiza o browser com dados da nuvem
-          let upgradedMaterias = materias;
+          let upgradedMaterias = materiasRef.current;
           if (data.materias && Array.isArray(data.materias) && data.materias.length > 0) {
             upgradedMaterias = ajustarEMesclarMaterias(data.materias);
             setMaterias(upgradedMaterias);
@@ -600,16 +664,6 @@ export default function App() {
             salvarRevisoes(data.revisoes);
           }
 
-          // Atualiza histórico com o que veio da nuvem
-          if (mappedLogs.length > 0) {
-            setHistorico(mappedLogs);
-            salvarHistorico(mappedLogs);
-            mappedLogs.forEach(l => {
-              syncedLogIds.current.add(l.id);
-              syncedLogIds.current.add(`${activeUserId}_${l.id.replace(activeUserId + '_', '')}`);
-            });
-          }
-
           if (data.planejamento_semanal) {
             localStorage.setItem('superestrategico_planejamento_semanal', JSON.stringify(data.planejamento_semanal));
           }
@@ -620,47 +674,57 @@ export default function App() {
 
           // Gravar AMBOS os timestamps no storage
           localStorage.setItem('superestrategico_last_sync_time_raw', cloudTime.toString());
-          const nowStr = new Date(data.updated_at).toLocaleString('pt-BR');
+          const nowStr = new Date(cloudTime).toLocaleString('pt-BR');
           setLastSyncCloudTime(nowStr);
           localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
 
-          // Disparar toast de sucesso
-          if (syncSuccessTimeoutRef.current) {
-            clearTimeout(syncSuccessTimeoutRef.current);
+          // Se após mesclagem houver logs locais pendentes de envio ao historico_logs, envia delta
+          const hasUnsyncedLogs = mergedLogs.some(l => {
+            const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
+            const scopedId = `${activeUserId}_${cleanId}`;
+            return !syncedLogIds.current.has(cleanId) && !syncedLogIds.current.has(scopedId) && !syncedLogIds.current.has(l.id);
+          });
+
+          if (hasUnsyncedLogs) {
+            await sendDadosToCloud(activeUserId);
+          } else {
+            // Disparar toast de sucesso
+            if (syncSuccessTimeoutRef.current) {
+              clearTimeout(syncSuccessTimeoutRef.current);
+            }
+            setShowSyncSuccessToast(true);
+            syncSuccessTimeoutRef.current = setTimeout(() => {
+              setShowSyncSuccessToast(false);
+            }, 2500);
           }
-          setShowSyncSuccessToast(true);
-          syncSuccessTimeoutRef.current = setTimeout(() => {
-            setShowSyncSuccessToast(false);
-          }, 2500);
-        } else if (localTime > cloudTime) {
-          // Browser possui alterações mais recentes, faz upload
+        } else if (localTime > cloudTime || force) {
+          // Browser possui alterações mais recentes OU usuário forçou sincronização: faz upload
           await sendDadosToCloud(activeUserId);
         } else {
-          // Já estão com o mesmo timestamp: sincroniza histórico se houver
-          if (mappedLogs.length > 0) {
-            setHistorico(mappedLogs);
-            salvarHistorico(mappedLogs);
-            mappedLogs.forEach(l => {
-              syncedLogIds.current.add(l.id);
-              syncedLogIds.current.add(`${activeUserId}_${l.id.replace(activeUserId + '_', '')}`);
-            });
-          } else if (historico.length > 0) {
+          // cloudTime === localTime: timestamps idênticos
+          const hasUnsyncedLogs = mergedLogs.some(l => {
+            const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
+            const scopedId = `${activeUserId}_${cleanId}`;
+            return !syncedLogIds.current.has(cleanId) && !syncedLogIds.current.has(scopedId) && !syncedLogIds.current.has(l.id);
+          });
+
+          if (hasUnsyncedLogs) {
             await sendDadosToCloud(activeUserId);
-          }
+          } else {
+            localStorage.setItem('superestrategico_last_sync_time_raw', cloudTime.toString());
+            const nowStr = new Date(cloudTime).toLocaleString('pt-BR');
+            setLastSyncCloudTime(nowStr);
+            localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
 
-          localStorage.setItem('superestrategico_last_sync_time_raw', cloudTime.toString());
-          const nowStr = new Date(data.updated_at).toLocaleString('pt-BR');
-          setLastSyncCloudTime(nowStr);
-          localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
-
-          // Disparar toast de sucesso
-          if (syncSuccessTimeoutRef.current) {
-            clearTimeout(syncSuccessTimeoutRef.current);
+            // Disparar toast de sucesso
+            if (syncSuccessTimeoutRef.current) {
+              clearTimeout(syncSuccessTimeoutRef.current);
+            }
+            setShowSyncSuccessToast(true);
+            syncSuccessTimeoutRef.current = setTimeout(() => {
+              setShowSyncSuccessToast(false);
+            }, 2500);
           }
-          setShowSyncSuccessToast(true);
-          syncSuccessTimeoutRef.current = setTimeout(() => {
-            setShowSyncSuccessToast(false);
-          }, 2500);
         }
       } else {
         // Se data não existe mas não retornou erro PGRST116, envia dados locais
@@ -689,7 +753,7 @@ export default function App() {
 
     try {
       setIsSyncingCloud(true);
-      await syncDadosFromCloud(session.user.id);
+      await syncDadosFromCloud(session.user.id, true);
     } catch (err: any) {
       console.warn('Erro ao forçar sincronização com a nuvem:', err);
     } finally {
@@ -704,8 +768,10 @@ export default function App() {
     setUserProfile(null);
     setSyncError(null);
     localStorage.removeItem('superestrategico_last_sync_cloud_time');
+    localStorage.removeItem('superestrategico_last_sync_time_raw');
     setLastSyncCloudTime('');
     syncedLogIds.current.clear();
+    isSyncingFromCloud.current = false;
     
     // Restaura o estado para os dados locais do localStorage
     const dados = carregarDadosIniciais();
