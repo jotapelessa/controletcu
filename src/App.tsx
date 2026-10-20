@@ -280,26 +280,66 @@ export default function App() {
     }
   };
 
+  // Obter e validar sessão ativa no Supabase (renovando se expirada ou prestes a expirar)
+  const getValidSession = async (): Promise<any | null> => {
+    if (!isSupabaseConfigured) return null;
+    try {
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr) {
+        console.warn('Erro ao obter sessão no Supabase:', sessionErr);
+        await supabase.auth.signOut().catch(() => {});
+        return null;
+      }
+
+      let session = sessionData?.session;
+      if (!session) return null;
+
+      // Se a sessão expirou ou está a menos de 60 segundos de expirar, tenta renovar
+      const isExpiredOrExpiring = session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
+      if (isExpiredOrExpiring) {
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed?.session) {
+          session = refreshed.session;
+          setUserSession(session);
+        } else {
+          console.warn('refreshSession falhou ou refresh_token expirado:', refreshErr);
+          await supabase.auth.signOut().catch(() => {});
+          return null;
+        }
+      }
+
+      if (!session.access_token || !session.user?.id) {
+        await supabase.auth.signOut().catch(() => {});
+        return null;
+      }
+
+      return session;
+    } catch (err) {
+      console.warn('Exceção ao validar sessão no Supabase:', err);
+      return null;
+    }
+  };
+
   // Função para enviar os dados atuais ao Supabase
   const sendDadosToCloud = async (userId?: string) => {
     if (!isSupabaseConfigured) return;
+
+    // 1. Obter e validar estritamente a sessão ativa antes de fazer qualquer chamada
+    const session = await getValidSession();
+    if (!session || !session.user?.id) {
+      console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
+      if (userSession) {
+        setUserSession(null);
+        setUserProfile(null);
+      }
+      return;
+    }
+
+    const activeUserId = session.user.id;
+
     try {
       setIsSyncingCloud(true);
       setSyncError(null);
-
-      // 1. Obter e validar sessão ativa no Supabase antes de tentar sincronizar
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-      let currentSession = sessionData?.session;
-
-      const activeUserId = currentSession?.user?.id || userId;
-      if (sessionErr || !currentSession || !activeUserId || !activeUserId.trim()) {
-        console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-        if (userSession) {
-          setUserSession(null);
-          setUserProfile(null);
-        }
-        return;
-      }
 
       const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
       const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
@@ -346,7 +386,7 @@ export default function App() {
         .from('user_data_sync')
         .upsert(payload, { onConflict: 'user_id' });
 
-      // Se a sessão expirou (erro 42501 RLS), tenta renovar o token via refreshSession e retenta
+      // Se a sessão expirou durante a requisição (erro 42501 RLS), tenta renovar o token via refreshSession e retenta
       if (error && (error.code === '42501' || error.message?.includes('row-level security'))) {
         console.warn('Erro de RLS detectado, tentando renovar sessão com refreshSession()...');
         const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
@@ -357,7 +397,8 @@ export default function App() {
             .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' });
           error = retry.error;
         } else {
-          // Token não pôde ser renovado automaticamente: limpa a sessão e avisa o usuário
+          // Token não pôde ser renovado automaticamente: limpa a sessão e avisa o usuário sem rethrow
+          await supabase.auth.signOut().catch(() => {});
           setUserSession(null);
           setUserProfile(null);
           setSyncError({
@@ -366,6 +407,18 @@ export default function App() {
           });
           return;
         }
+      }
+
+      // Se após a retentativa ainda houver erro de RLS 42501
+      if (error && (error.code === '42501' || error.message?.includes('row-level security'))) {
+        await supabase.auth.signOut().catch(() => {});
+        setUserSession(null);
+        setUserProfile(null);
+        setSyncError({
+          friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
+          technical: `[42501]: ${error.message}`
+        });
+        return;
       }
 
       if (error) throw error;
@@ -391,7 +444,19 @@ export default function App() {
           .from('historico_logs')
           .upsert(logsPayload, { onConflict: 'id' });
 
-        if (logsError) throw logsError;
+        if (logsError) {
+          if (logsError.code === '42501' || logsError.message?.includes('row-level security')) {
+            await supabase.auth.signOut().catch(() => {});
+            setUserSession(null);
+            setUserProfile(null);
+            setSyncError({
+              friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
+              technical: `[42501]: ${logsError.message}`
+            });
+            return;
+          }
+          throw logsError;
+        }
 
         // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
         unsyncedLogs.forEach(log => syncedLogIds.current.add(log.id));
@@ -415,7 +480,17 @@ export default function App() {
       }, 2500);
     } catch (err: any) {
       console.error('Erro ao enviar dados para o Supabase:', err);
-      setSyncError(getFriendlySyncErrorMessage(err));
+      if (err?.code === '42501' || err?.message?.includes('row-level security')) {
+        await supabase.auth.signOut().catch(() => {});
+        setUserSession(null);
+        setUserProfile(null);
+        setSyncError({
+          friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
+          technical: `[42501]: ${err.message || ''}`
+        });
+      } else {
+        setSyncError(getFriendlySyncErrorMessage(err));
+      }
     } finally {
       setIsSyncingCloud(false);
     }
@@ -424,6 +499,20 @@ export default function App() {
   // Função para carregar e sincronizar dados da nuvem do Supabase
   const syncDadosFromCloud = async (userId: string) => {
     if (!isSupabaseConfigured) return;
+
+    // 1. Garantir que uma sessão autenticada válida existe antes de consultar
+    const session = await getValidSession();
+    if (!session || !session.user?.id) {
+      console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
+      if (userSession) {
+        setUserSession(null);
+        setUserProfile(null);
+      }
+      return;
+    }
+
+    const activeUserId = session.user.id;
+
     try {
       setIsSyncingCloud(true);
       setSyncError(null);
@@ -432,10 +521,29 @@ export default function App() {
       const { data, error } = await supabase
         .from('user_data_sync')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', activeUserId)
         .single();
 
-      if (error && error.code !== 'PGRST116') { // PGRST116: Registro não encontrado
+      // Se houver erro de autenticação ou RLS, limpa a sessão e aborta
+      if (
+        error &&
+        (error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          (error as any).status === 401 ||
+          (error as any).status === 403 ||
+          error.message?.includes('row-level security') ||
+          error.message?.includes('JWT') ||
+          error.message?.includes('token'))
+      ) {
+        console.warn('syncDadosFromCloud: erro de RLS/autenticação ao carregar dados:', error);
+        await supabase.auth.signOut().catch(() => {});
+        setUserSession(null);
+        setUserProfile(null);
+        return;
+      }
+
+      // PGRST116: Registro não encontrado (válido apenas se não foi erro de autorização)
+      if (error && error.code !== 'PGRST116') {
         throw error;
       }
 
@@ -443,9 +551,23 @@ export default function App() {
       const { data: dbLogs, error: logsError } = await supabase
         .from('historico_logs')
         .select('*')
-        .eq('user_id', userId);
+        .eq('user_id', activeUserId);
 
       if (logsError) {
+        if (
+          logsError.code === '42501' ||
+          logsError.code === 'PGRST301' ||
+          (logsError as any).status === 401 ||
+          (logsError as any).status === 403 ||
+          logsError.message?.includes('row-level security') ||
+          logsError.message?.includes('JWT')
+        ) {
+          console.warn('syncDadosFromCloud: erro de RLS/autenticação ao buscar historico_logs:', logsError);
+          await supabase.auth.signOut().catch(() => {});
+          setUserSession(null);
+          setUserProfile(null);
+          return;
+        }
         // Não bloqueia o sync principal, apenas loga o erro de histórico
         console.error('Erro ao buscar historico_logs:', logsError);
       }
@@ -521,7 +643,7 @@ export default function App() {
           // Browser possui alterações mais recentes, faz upload
           // Só 1 state será alterado (lastSyncCloudTime) — não precisa de skip extra
           skipSyncCount.current = 1;
-          await sendDadosToCloud(userId);
+          await sendDadosToCloud(activeUserId);
         } else {
           // Já estão sincronizados — historico pode ser atualizado
           skipSyncCount.current = 1;
@@ -533,18 +655,24 @@ export default function App() {
           setLastSyncCloudTime(nowStr);
           localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
         }
-      } else {
+      } else if (!error || error.code === 'PGRST116') {
         // Usuário novo sem dados na nuvem:
         // Verifica se é um primeiro run com dados mock — não os envia para a nuvem
         const isFirstRun = !localStorage.getItem('superestrategico_last_sync_time_raw');
         if (!isFirstRun) {
           skipSyncCount.current = 1;
-          await sendDadosToCloud(userId);
+          await sendDadosToCloud(activeUserId);
         }
       }
     } catch (err: any) {
       console.error('Erro ao sincronizar dados da nuvem Supabase:', err);
-      setSyncError(getFriendlySyncErrorMessage(err));
+      if (err?.code === '42501' || err?.message?.includes('row-level security') || err?.code === 'PGRST301') {
+        await supabase.auth.signOut().catch(() => {});
+        setUserSession(null);
+        setUserProfile(null);
+      } else {
+        setSyncError(getFriendlySyncErrorMessage(err));
+      }
     } finally {
       setIsSyncingCloud(false);
     }
@@ -958,15 +1086,7 @@ export default function App() {
           <SupabaseAuthModal
             onClose={() => setShowAuthModal(false)}
             onSuccess={() => {
-              if (isSupabaseConfigured) {
-                supabase.auth.getSession().then(({ data: { session } }) => {
-                  if (session) {
-                    setUserSession(session);
-                    syncDadosFromCloud(session.user.id);
-                    fetchAndSetProfile(session.user.id, session.user.email);
-                  }
-                });
-              }
+              setShowAuthModal(false);
             }}
           />
         )}
@@ -1352,21 +1472,7 @@ export default function App() {
         <SupabaseAuthModal
           onClose={() => setShowAuthModal(false)}
           onSuccess={() => {
-            if (isSupabaseConfigured) {
-              supabase.auth.getSession().then(({ data: { session } }) => {
-                if (session) {
-                  setUserSession(session);
-                  if (!isSyncingFromCloud.current) {
-                    isSyncingFromCloud.current = true;
-                    skipSyncCount.current = 6;
-                    syncDadosFromCloud(session.user.id).finally(() => {
-                      isSyncingFromCloud.current = false;
-                    });
-                  }
-                  fetchAndSetProfile(session.user.id, session.user.email);
-                }
-              });
-            }
+            setShowAuthModal(false);
           }}
         />
       )}
