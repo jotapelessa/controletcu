@@ -67,6 +67,8 @@ export default function App() {
       code === '403' ||
       err.status === 401 ||
       err.status === 403 ||
+      err.statusCode === 401 ||
+      err.statusCode === 403 ||
       msg.includes('42501') ||
       msg.toUpperCase().includes('PGRST301')
     );
@@ -129,7 +131,10 @@ export default function App() {
           setUserSession(session);
         } else {
           console.warn('refreshSession falhou:', refreshErr);
-          return null;
+          const isHardExpired = session.expires_at && (session.expires_at * 1000 <= Date.now());
+          if (isHardExpired) {
+            return null;
+          }
         }
       }
 
@@ -239,9 +244,6 @@ export default function App() {
             syncDadosFromCloud(session.user.id);
           }
           fetchAndSetProfile(session.user.id, session.user.email);
-        } else {
-          setUserSession(null);
-          setUserProfile(null);
         }
       });
 
@@ -255,7 +257,7 @@ export default function App() {
           return;
         }
 
-        if (event === 'SIGNED_OUT' || !session) {
+        if (event === 'SIGNED_OUT') {
           setUserSession(null);
           setUserProfile(null);
           setSyncError(null);
@@ -267,13 +269,15 @@ export default function App() {
           return;
         }
 
-        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-          setUserSession(session);
-          setSyncError(null);
-          if (!isSyncingFromCloud.current) {
-            syncDadosFromCloud(session.user.id);
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+          if (session) {
+            setUserSession(session);
+            setSyncError(null);
+            if (!isSyncingFromCloud.current) {
+              syncDadosFromCloud(session.user.id);
+            }
+            fetchAndSetProfile(session.user.id, session.user.email);
           }
-          fetchAndSetProfile(session.user.id, session.user.email);
         }
       });
 
@@ -478,6 +482,7 @@ export default function App() {
       // Sincronizar novos logs locais com a tabela historico_logs (delta sync)
       // Prefixar IDs com activeUserId para evitar conflito RLS 42501 entre usuários
       const unsyncedLogs = currentHistorico.filter(log => {
+        if (!log || !log.id || typeof log.id !== 'string') return false;
         const cleanId = log.id.startsWith(`${activeUserId}_`) ? log.id.slice(activeUserId.length + 1) : log.id;
         const scopedId = `${activeUserId}_${cleanId}`;
         return !syncedLogIds.current.has(cleanId) && !syncedLogIds.current.has(scopedId) && !syncedLogIds.current.has(log.id);
@@ -681,6 +686,7 @@ export default function App() {
 
       // Registrar todos os logs vindos da nuvem em syncedLogIds para nunca duplicar
       mappedLogs.forEach(l => {
+        if (!l || !l.id || typeof l.id !== 'string') return;
         const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
         const scopedId = `${activeUserId}_${cleanId}`;
         syncedLogIds.current.add(cleanId);
@@ -740,6 +746,7 @@ export default function App() {
 
           // Se após mesclagem houver logs locais pendentes de envio ao historico_logs, envia delta
           const hasUnsyncedLogs = mergedLogs.some(l => {
+            if (!l || !l.id || typeof l.id !== 'string') return false;
             const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
             const scopedId = `${activeUserId}_${cleanId}`;
             return !syncedLogIds.current.has(cleanId) && !syncedLogIds.current.has(scopedId) && !syncedLogIds.current.has(l.id);
@@ -763,6 +770,7 @@ export default function App() {
         } else {
           // cloudTime === localTime: timestamps idênticos
           const hasUnsyncedLogs = mergedLogs.some(l => {
+            if (!l || !l.id || typeof l.id !== 'string') return false;
             const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
             const scopedId = `${activeUserId}_${cleanId}`;
             return !syncedLogIds.current.has(cleanId) && !syncedLogIds.current.has(scopedId) && !syncedLogIds.current.has(l.id);
