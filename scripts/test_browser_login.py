@@ -78,8 +78,12 @@ async def run_tests():
         assert not await footer.is_visible()
         print("PASS: Logged out successfully, returned to landing page without modal popup.")
 
-        await browser.close()
-        print("\nALL 6 E2E BROWSER TESTS PASSED SUCCESSFULLY!")
+        print("\nALL 6 E2E BROWSER TESTS PASSED SUCCESSFULLY!", flush=True)
+        try:
+            await asyncio.wait_for(context.close(), timeout=2.0)
+            await asyncio.wait_for(browser.close(), timeout=2.0)
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(run_tests())
