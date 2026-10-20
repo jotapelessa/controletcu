@@ -126,6 +126,10 @@ export default function DadosEBackup({
   const [isResettingEstudo, setIsResettingEstudo] = useState(false);
   const [isResettingCompleto, setIsResettingCompleto] = useState(false);
   const [configResetSuccess, setConfigResetSuccess] = useState(false);
+  const [resetEstudoSuccess, setResetEstudoSuccess] = useState(false);
+  const [resetEstudoError, setResetEstudoError] = useState<string>('');
+  const [resetCompletoSuccess, setResetCompletoSuccess] = useState(false);
+  const [resetCompletoError, setResetCompletoError] = useState<string>('');
 
   // Gemini API Key Personal States
   const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
@@ -624,14 +628,20 @@ export default function DadosEBackup({
       return;
     }
     setIsResettingCompleto(true);
+    setResetCompletoError('');
     try {
       await onResetGeral(false);
       setSuccessMsg('✅ Todos os dados e configurações foram redefinidos com sucesso na nuvem e localmente!');
+      setResetCompletoSuccess(true);
       setResetConfirmInput('');
       setTimeout(() => setSuccessMsg(''), 5000);
+      setTimeout(() => setResetCompletoSuccess(false), 5000);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Erro ao redefinir tudo.');
+      const msg = err?.message || 'Erro ao redefinir tudo.';
+      setErrorMsg(msg);
+      setResetCompletoError(msg);
       setTimeout(() => setErrorMsg(''), 6000);
+      setTimeout(() => setResetCompletoError(''), 6000);
     } finally {
       setIsResettingCompleto(false);
     }
@@ -640,14 +650,20 @@ export default function DadosEBackup({
   const handleConfirmarResetEstudo = async () => {
     if (resetEstudoInput.trim().toUpperCase() !== 'ESTUDOS') return;
     setIsResettingEstudo(true);
+    setResetEstudoError('');
     try {
       await onResetDadosEstudo();
       setSuccessMsg('✅ Dados de estudo resetados com sucesso na nuvem e localmente!');
+      setResetEstudoSuccess(true);
       setResetEstudoInput('');
       setTimeout(() => setSuccessMsg(''), 5000);
+      setTimeout(() => setResetEstudoSuccess(false), 5000);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Erro ao resetar dados de estudo.');
+      const msg = err?.message || 'Erro ao resetar dados de estudo.';
+      setErrorMsg(msg);
+      setResetEstudoError(msg);
       setTimeout(() => setErrorMsg(''), 6000);
+      setTimeout(() => setResetEstudoError(''), 6000);
     } finally {
       setIsResettingEstudo(false);
     }
@@ -1474,6 +1490,16 @@ export default function DadosEBackup({
                   </p>
                 </div>
               </div>
+              {resetEstudoSuccess && (
+                <div className="flex items-center gap-2 text-emerald-400 text-[10px] font-mono bg-emerald-950/30 border border-emerald-500/20 rounded p-2">
+                  <CheckCircle size={12} className="shrink-0" /> Dados de estudo resetados com sucesso na nuvem e localmente!
+                </div>
+              )}
+              {resetEstudoError && (
+                <div className="flex items-center gap-2 text-rose-400 text-[10px] font-mono bg-rose-950/30 border border-rose-500/20 rounded p-2">
+                  <AlertCircle size={12} className="shrink-0" /> {resetEstudoError}
+                </div>
+              )}
               <div className="space-y-1.5">
                 <label className="text-[9px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
                   Digite <strong className="text-rose-400">ESTUDOS</strong> para confirmar:
@@ -1546,6 +1572,16 @@ export default function DadosEBackup({
                   </p>
                 </div>
               </div>
+              {resetCompletoSuccess && (
+                <div className="flex items-center gap-2 text-emerald-400 text-[10px] font-mono bg-emerald-950/30 border border-emerald-500/20 rounded p-2">
+                  <CheckCircle size={12} className="shrink-0" /> Tudo foi redefinido com sucesso na nuvem e localmente!
+                </div>
+              )}
+              {resetCompletoError && (
+                <div className="flex items-center gap-2 text-rose-400 text-[10px] font-mono bg-rose-950/30 border border-rose-500/20 rounded p-2">
+                  <AlertCircle size={12} className="shrink-0" /> {resetCompletoError}
+                </div>
+              )}
               <div className="space-y-1.5">
                 <label className="text-[9px] font-mono font-bold text-[#64748B] uppercase tracking-wider block">
                   Digite <strong className="text-rose-500">RESETAR</strong> para confirmar:

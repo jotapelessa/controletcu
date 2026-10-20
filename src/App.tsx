@@ -696,9 +696,7 @@ export default function App() {
       });
 
       // Mesclagem segura: mantém todos os logs locais offline e da nuvem
-      let effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
-      setHistorico(effectiveLogs);
-      salvarHistorico(effectiveLogs);
+      let effectiveLogs = mappedLogs;
 
       if (data) {
         // Obter timestamps de modificação para saber qual fonte é mais recente
@@ -708,11 +706,9 @@ export default function App() {
 
         if (cloudTime > localTime) {
           // Nuvem possui dados mais recentes — atualiza o browser com dados da nuvem
-          if (Array.isArray(data.historico)) {
-            effectiveLogs = mappedLogs;
-            setHistorico(effectiveLogs);
-            salvarHistorico(effectiveLogs);
-          }
+          effectiveLogs = mappedLogs;
+          setHistorico(effectiveLogs);
+          salvarHistorico(effectiveLogs);
 
           let upgradedMaterias = materiasRef.current;
           if (data.materias && Array.isArray(data.materias) && data.materias.length > 0) {
@@ -772,10 +768,23 @@ export default function App() {
             }, 2500);
           }
         } else if (localTime > cloudTime || force) {
+          effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+          setHistorico(effectiveLogs);
+          salvarHistorico(effectiveLogs);
           // Browser possui alterações mais recentes OU usuário forçou sincronização: faz upload
           await sendDadosToCloud(activeUserId);
         } else {
           // cloudTime === localTime: timestamps idênticos
+          if (Array.isArray(data.historico) && data.historico.length === 0 && mappedLogs.length === 0) {
+            effectiveLogs = [];
+            setHistorico([]);
+            salvarHistorico([]);
+          } else {
+            effectiveLogs = mergeHistoricoLogs(historicoRef.current, mappedLogs, activeUserId);
+            setHistorico(effectiveLogs);
+            salvarHistorico(effectiveLogs);
+          }
+
           const hasUnsyncedLogs = effectiveLogs.some(l => {
             if (!l || !l.id || typeof l.id !== 'string') return false;
             const cleanId = l.id.startsWith(`${activeUserId}_`) ? l.id.slice(activeUserId.length + 1) : l.id;
@@ -1077,7 +1086,7 @@ export default function App() {
 
       if (!session?.access_token || !session?.user?.id) {
         alert('⚠️ Sua sessão na nuvem expirou ou é inválida. Por favor, faça login novamente antes de resetar seus dados para que a nuvem também seja limpa com segurança.');
-        return;
+        throw new Error('Sua sessão na nuvem expirou ou é inválida. Por favor, faça login novamente antes de resetar.');
       }
     }
 
@@ -1086,6 +1095,10 @@ export default function App() {
 
     let serverTimeMs = Date.now();
     let nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
+
+    // Deep clone para evitar mutação direta das instâncias estáticas
+    const cleanMaterias = JSON.parse(JSON.stringify(MATERIAS_PADRAO));
+    const cleanCiclo = JSON.parse(JSON.stringify(CICLO_PADRAO));
 
     if (isSupabaseConfigured && session?.user?.id) {
       activeUserId = session.user.id;
@@ -1128,8 +1141,8 @@ export default function App() {
         .upsert({
           user_id: activeUserId,
           updated_at: new Date().toISOString(),
-          materias: MATERIAS_PADRAO,
-          ciclo: CICLO_PADRAO,
+          materias: cleanMaterias,
+          ciclo: cleanCiclo,
           simulados: [],
           revisoes: [],
           historico: [],
@@ -1151,8 +1164,8 @@ export default function App() {
             .upsert({
               user_id: activeUserId,
               updated_at: new Date().toISOString(),
-              materias: MATERIAS_PADRAO,
-              ciclo: CICLO_PADRAO,
+              materias: cleanMaterias,
+              ciclo: cleanCiclo,
               simulados: [],
               revisoes: [],
               historico: [],
@@ -1196,8 +1209,8 @@ export default function App() {
     localStorage.removeItem('superestrategico_github_gist_id');
 
     // Atualizar dados de estudos no localStorage
-    salvarMaterias(MATERIAS_PADRAO);
-    salvarCiclo(CICLO_PADRAO);
+    salvarMaterias(cleanMaterias);
+    salvarCiclo(cleanCiclo);
     salvarSimulados([]);
     salvarRevisoes([]);
     salvarHistorico([]);
@@ -1211,14 +1224,14 @@ export default function App() {
     syncedLogIds.current.clear();
 
     // Atualizar React states e refs diretamente
-    setMaterias(MATERIAS_PADRAO);
-    setCiclo(CICLO_PADRAO);
+    setMaterias(cleanMaterias);
+    setCiclo(cleanCiclo);
     setSimulados([]);
     setRevisoes([]);
     setHistorico([]);
 
-    materiasRef.current = MATERIAS_PADRAO;
-    cicloRef.current = CICLO_PADRAO;
+    materiasRef.current = cleanMaterias;
+    cicloRef.current = cleanCiclo;
     simuladosRef.current = [];
     revisoesRef.current = [];
     historicoRef.current = [];
@@ -1226,7 +1239,7 @@ export default function App() {
     setIsSyncingCloud(false);
     setTimeout(() => {
       isSyncingFromCloud.current = false;
-    }, 1000);
+    }, 2500);
 
     // Toast de sucesso
     if (syncSuccessTimeoutRef.current) {
@@ -1257,7 +1270,7 @@ export default function App() {
 
       if (!session?.access_token || !session?.user?.id) {
         alert('⚠️ Sua sessão na nuvem expirou ou é inválida. Por favor, faça login novamente antes de resetar seus dados para que a nuvem também seja limpa com segurança.');
-        return;
+        throw new Error('Sua sessão na nuvem expirou ou é inválida. Por favor, faça login novamente antes de resetar.');
       }
     }
 
@@ -1266,6 +1279,18 @@ export default function App() {
 
     let serverTimeMs = Date.now();
     let nowStr = new Date(serverTimeMs).toLocaleString('pt-BR');
+
+    // Deep clone para evitar mutação direta das instâncias estáticas
+    const cleanMaterias = JSON.parse(JSON.stringify(MATERIAS_PADRAO));
+    const cleanCiclo = JSON.parse(JSON.stringify(CICLO_PADRAO));
+
+    // Limpar listas temporárias de questões do cronômetro para evitar que sessões fantasmas sejam salvas
+    localStorage.removeItem('superestrategico_timer_correct_list');
+    localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_segundos');
+    localStorage.removeItem('superestrategico_timer_hora_inicio');
+    localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_ia_diagnostico_recente');
 
     if (isSupabaseConfigured && session?.user?.id) {
       activeUserId = session.user.id;
@@ -1302,20 +1327,20 @@ export default function App() {
         throw new Error(`Erro ao limpar historico_logs: ${delErr.message}`);
       }
 
-      // Preservar planejamento_semanal e configurações do usuário
+      // Preservar planejamento_semanal e configurações do usuário (limpando timer questions)
       const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
       const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
 
       const configuracoes = {
-        timer_segundos: parseInt(localStorage.getItem('superestrategico_timer_segundos') || '0', 10),
+        timer_segundos: 0,
         timer_modo_regressivo: localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true',
-        timer_hora_inicio: localStorage.getItem('superestrategico_timer_hora_inicio'),
-        timer_hora_fim: localStorage.getItem('superestrategico_timer_hora_fim'),
-        timer_correct_list: getLocalStorageItemJson('superestrategico_timer_correct_list') || [],
-        timer_wrong_list: getLocalStorageItemJson('superestrategico_timer_wrong_list') || [],
+        timer_hora_inicio: null,
+        timer_hora_fim: null,
+        timer_correct_list: [],
+        timer_wrong_list: [],
         timer_limite_questoes: parseInt(localStorage.getItem('superestrategico_timer_limite_questoes') || '50', 10),
-        timer_modal_open: localStorage.getItem('superestrategico_timer_modal_open') === 'true',
-        ia_diagnostico_recente: localStorage.getItem('superestrategico_ia_diagnostico_recente'),
+        timer_modal_open: false,
+        ia_diagnostico_recente: null,
         github_token: localStorage.getItem('superestrategico_github_token') || '',
         github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || '',
         user_gemini_api_key: localStorage.getItem('superestrategico_user_gemini_api_key') || '',
@@ -1328,8 +1353,8 @@ export default function App() {
         .upsert({
           user_id: activeUserId,
           updated_at: new Date().toISOString(),
-          materias: MATERIAS_PADRAO,
-          ciclo: CICLO_PADRAO,
+          materias: cleanMaterias,
+          ciclo: cleanCiclo,
           simulados: [],
           revisoes: [],
           historico: [],
@@ -1351,8 +1376,8 @@ export default function App() {
             .upsert({
               user_id: activeUserId,
               updated_at: new Date().toISOString(),
-              materias: MATERIAS_PADRAO,
-              ciclo: CICLO_PADRAO,
+              materias: cleanMaterias,
+              ciclo: cleanCiclo,
               simulados: [],
               revisoes: [],
               historico: [],
@@ -1382,8 +1407,8 @@ export default function App() {
     }
 
     // Atualizar dados de estudos no localStorage
-    salvarMaterias(MATERIAS_PADRAO);
-    salvarCiclo(CICLO_PADRAO);
+    salvarMaterias(cleanMaterias);
+    salvarCiclo(cleanCiclo);
     salvarSimulados([]);
     salvarRevisoes([]);
     salvarHistorico([]);
@@ -1397,14 +1422,14 @@ export default function App() {
     syncedLogIds.current.clear();
 
     // Atualizar React states e refs diretamente
-    setMaterias(MATERIAS_PADRAO);
-    setCiclo(CICLO_PADRAO);
+    setMaterias(cleanMaterias);
+    setCiclo(cleanCiclo);
     setSimulados([]);
     setRevisoes([]);
     setHistorico([]);
 
-    materiasRef.current = MATERIAS_PADRAO;
-    cicloRef.current = CICLO_PADRAO;
+    materiasRef.current = cleanMaterias;
+    cicloRef.current = cleanCiclo;
     simuladosRef.current = [];
     revisoesRef.current = [];
     historicoRef.current = [];
@@ -1412,7 +1437,7 @@ export default function App() {
     setIsSyncingCloud(false);
     setTimeout(() => {
       isSyncingFromCloud.current = false;
-    }, 1000);
+    }, 2500);
 
     // Toast de confirmação visual
     if (syncSuccessTimeoutRef.current) {
