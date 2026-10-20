@@ -140,18 +140,11 @@ export default function App() {
           setUserSession(session);
         } else {
           console.warn('refreshSession falhou:', refreshErr);
-          setUserSession(null);
-          setSyncError({
-            friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
-            technical: `Sessão expirada ou inválida (${refreshErr?.message || 'Token refresh falhou'}).`
-          });
-          setShowAuthModal(true);
           return null;
         }
       }
 
       if (!session.access_token || !session.user?.id) {
-        setUserSession(null);
         return null;
       }
 
@@ -253,6 +246,7 @@ export default function App() {
       getValidSession().then((session) => {
         if (session) {
           setUserSession(session);
+          setShowAuthModal(false);
           if (!isSyncingFromCloud.current) {
             syncDadosFromCloud(session.user.id);
           }
@@ -269,6 +263,7 @@ export default function App() {
               setUserSession(null);
             } else {
               setUserSession(session);
+              setShowAuthModal(false);
               fetchAndSetProfile(session.user.id, session.user.email);
             }
           }
@@ -291,6 +286,7 @@ export default function App() {
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
           if (session) {
             setUserSession(session);
+            setShowAuthModal(false);
             setSyncError(null);
             if (!isSyncingFromCloud.current) {
               syncDadosFromCloud(session.user.id);
@@ -414,12 +410,10 @@ export default function App() {
     const session = await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      setUserSession(null);
       setSyncError({
-        friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+        friendly: "Não foi possível validar a sessão com a nuvem. Suas alterações continuam salvas localmente.",
         technical: "Sessão inválida ou expirada."
       });
-      setShowAuthModal(true);
       return false;
     }
 
@@ -489,12 +483,10 @@ export default function App() {
           upsertData = retry.data;
         } else {
           console.warn('Token expirado não pôde ser renovado na nuvem.');
-          setUserSession(null);
           setSyncError({
-            friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+            friendly: "Não foi possível sincronizar na nuvem no momento. Suas alterações continuam salvas localmente.",
             technical: `Erro de renovação de sessão: ${refreshErr?.message || 'Token inválido'}`
           });
-          setShowAuthModal(true);
           return false;
         }
       }
@@ -502,12 +494,10 @@ export default function App() {
       // Se o erro de RLS/Auth persistir mesmo após o retry
       if (isAuthOrRlsError(error)) {
         console.warn('Erro de RLS/Auth persistiu após tentativa de renovação.');
-        setUserSession(null);
         setSyncError({
-          friendly: "Sua sessão com o Supabase expirou ou foi invalidada. Faça login novamente.",
+          friendly: "Erro de autenticação ou permissão na nuvem. Suas alterações continuam salvas localmente.",
           technical: `Erro de RLS/Auth: ${error?.message || '42501'}`
         });
-        setShowAuthModal(true);
         return false;
       }
 
@@ -560,12 +550,11 @@ export default function App() {
               .upsert(logsPayload.map(lp => ({ ...lp, user_id: activeUserId })), { onConflict: 'id' });
             logsError = retryLogs.error;
           } else {
-            setUserSession(null);
+            console.warn('Erro de RLS/Auth ao sincronizar historico_logs não pôde ser renovado.');
             setSyncError({
-              friendly: "Sua sessão com o Supabase expirou ao enviar histórico de estudos. Faça login novamente.",
+              friendly: "Não foi possível sincronizar histórico de estudos na nuvem. Alterações salvas localmente.",
               technical: `Erro de renovação de sessão: ${refreshLogsErr?.message || 'Token inválido'}`
             });
-            setShowAuthModal(true);
             return false;
           }
         }
@@ -631,12 +620,10 @@ export default function App() {
       const session = await getValidSession();
       if (!session || !session.access_token || !session.user?.id) {
         console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-        setUserSession(null);
         setSyncError({
-          friendly: "Sua sessão com o Supabase expirou. Faça login novamente para sincronizar com a nuvem.",
+          friendly: "Não foi possível validar a sessão com a nuvem. Operando com dados locais.",
           technical: "Sessão inválida ou expirada."
         });
-        setShowAuthModal(true);
         return false;
       }
 
@@ -665,12 +652,10 @@ export default function App() {
           error = retry.error;
         } else {
           console.warn('syncDadosFromCloud: sessão expirada não pôde ser renovada.');
-          setUserSession(null);
           setSyncError({
-            friendly: "Sua sessão com o Supabase expirou. Faça login novamente para continuar sincronizando na nuvem.",
+            friendly: "Não foi possível atualizar dados da nuvem no momento. Operando com dados locais.",
             technical: `Erro de renovação de sessão: ${refreshErr?.message || 'Token inválido'}`
           });
-          setShowAuthModal(true);
           return false;
         }
       }
@@ -678,12 +663,10 @@ export default function App() {
       // Se ainda for erro de RLS ou autenticação após retry, aborta notificando o usuário
       if (isAuthOrRlsError(error)) {
         console.warn('syncDadosFromCloud: erro de RLS/autenticação persistiu ao carregar dados:', error);
-        setUserSession(null);
         setSyncError({
-          friendly: "Sua sessão com o Supabase expirou ou foi invalidada. Faça login novamente.",
+          friendly: "Erro de permissão ao sincronizar com a nuvem. Operando com dados locais.",
           technical: `Erro de RLS/Auth: ${error?.message || '42501'}`
         });
-        setShowAuthModal(true);
         return false;
       }
 
@@ -714,9 +697,7 @@ export default function App() {
       if (logsError) {
         console.warn('syncDadosFromCloud: aviso ao buscar historico_logs:', logsError);
         if (isAuthOrRlsError(logsError)) {
-          setUserSession(null);
           setSyncError(getFriendlySyncErrorMessage(logsError));
-          setShowAuthModal(true);
           return false;
         }
       }
@@ -1635,6 +1616,62 @@ export default function App() {
     }
   };
 
+  const renderSyncErrorToast = () => {
+    if (!syncError) return null;
+    return (
+      <div
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 px-5 py-3 rounded-xl shadow-2xl border border-rose-500/40 bg-[#1a0a0a] text-rose-300 text-sm font-medium animate-fade-in-up max-w-[90vw] md:max-w-md"
+        style={{ boxShadow: '0 0 30px rgba(239,68,68,0.2)' }}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">⚠️</span>
+            <span>{syncError.friendly}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {(!userSession || syncError.friendly.toLowerCase().includes('login') || syncError.friendly.toLowerCase().includes('sessão')) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSyncError(null);
+                  setShowAuthModal(true);
+                }}
+                className="text-[10px] bg-[#C5A059] text-black font-bold px-2 py-1 rounded hover:bg-[#C5A059]/90 cursor-pointer uppercase transition-all"
+              >
+                Fazer Login
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const detailsEl = document.getElementById('technical-error-details');
+                if (detailsEl) {
+                  detailsEl.classList.toggle('hidden');
+                }
+              }}
+              className="text-[10px] text-rose-400 hover:text-rose-200 underline cursor-pointer"
+            >
+              Detalhes
+            </button>
+            <button
+              type="button"
+              onClick={() => setSyncError(null)}
+              className="text-[10px] text-rose-400 hover:text-rose-200 font-bold uppercase cursor-pointer"
+            >
+              Fechar
+            </button>
+          </div>
+        </div>
+        <div
+          id="technical-error-details"
+          className="hidden mt-2 p-2 bg-black/40 border border-rose-950/60 rounded text-[10px] font-mono text-rose-400/80 break-all overflow-y-auto max-h-24"
+        >
+          {syncError.technical}
+        </div>
+      </div>
+    );
+  };
+
   // Se não houver sessão ativa, renderiza a landing page pública por padrão
   if (!userSession) {
     return (
@@ -1649,6 +1686,7 @@ export default function App() {
             onSuccess={() => setShowAuthModal(false)}
           />
         )}
+        {renderSyncErrorToast()}
       </>
     );
   }
@@ -2034,58 +2072,7 @@ export default function App() {
       )}
 
       {/* Toast de erro de sincronização */}
-      {syncError && (
-        <div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 px-5 py-3 rounded-xl shadow-2xl border border-rose-500/40 bg-[#1a0a0a] text-rose-300 text-sm font-medium animate-fade-in-up max-w-[90vw] md:max-w-md"
-          style={{ boxShadow: '0 0 30px rgba(239,68,68,0.2)' }}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-lg">⚠️</span>
-              <span>{syncError.friendly}</span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {(!userSession || syncError.friendly.toLowerCase().includes('login') || syncError.friendly.toLowerCase().includes('sessão')) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSyncError(null);
-                    setShowAuthModal(true);
-                  }}
-                  className="text-[10px] bg-[#C5A059] text-black font-bold px-2 py-1 rounded hover:bg-[#C5A059]/90 cursor-pointer uppercase transition-all"
-                >
-                  Fazer Login
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  const detailsEl = document.getElementById('technical-error-details');
-                  if (detailsEl) {
-                    detailsEl.classList.toggle('hidden');
-                  }
-                }}
-                className="text-[10px] text-rose-400 hover:text-rose-200 underline cursor-pointer"
-              >
-                Detalhes
-              </button>
-              <button
-                type="button"
-                onClick={() => setSyncError(null)}
-                className="text-[10px] text-rose-400 hover:text-rose-200 font-bold uppercase cursor-pointer"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-          <div
-            id="technical-error-details"
-            className="hidden mt-2 p-2 bg-black/40 border border-rose-950/60 rounded text-[10px] font-mono text-rose-400/80 break-all overflow-y-auto max-h-24"
-          >
-            {syncError.technical}
-          </div>
-        </div>
-      )}
+      {renderSyncErrorToast()}
 
       {/* Toast de sucesso de sincronização */}
       {showSyncSuccessToast && (

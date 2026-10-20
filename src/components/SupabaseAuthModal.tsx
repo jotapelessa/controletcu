@@ -47,11 +47,8 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
         if (error) throw error;
         
         if (data?.session) {
-          setSuccessMsg('Conta criada e autenticada com sucesso! Entrando...');
-          setTimeout(() => {
-            onSuccess(data.session);
-            onClose();
-          }, 800);
+          onSuccess(data.session);
+          onClose();
         } else {
           setSuccessMsg('Conta criada com sucesso! Caso a confirmação de e-mail esteja ativa no Supabase, valide o link. Caso contrário, você já pode fazer login.');
           setIsSignUp(false);
@@ -63,11 +60,8 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
         });
         if (error) throw error;
 
-        setSuccessMsg('Acesso concedido com sucesso! Entrando...');
-        setTimeout(() => {
-          onSuccess(data?.session);
-          onClose();
-        }, 600);
+        onSuccess(data?.session);
+        onClose();
       }
     } catch (err: any) {
       let msg = err?.message || 'Erro durante a autenticação. Tente novamente.';
