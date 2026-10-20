@@ -58,7 +58,7 @@ export default function App() {
     } else if (errCode === '23502') {
       friendly = "Seu progresso ou ciclo possui campos incompletos. Tente redefinir seus dados de estudos.";
     } else if (errCode === '42501' || errCode === 'PGRST301') {
-      friendly = "Permissão negada. Verifique o status da sua assinatura ou faça login novamente.";
+      friendly = "Sua sessão expirou ou não está autenticada. Faça login novamente para sincronizar com a nuvem.";
     } else if (errMsg.toLowerCase().includes('fetch') || errMsg.toLowerCase().includes('network') || errCode === 'TypeError') {
       friendly = "Não foi possível conectar ao servidor. Suas alterações foram salvas localmente.";
     }
@@ -281,11 +281,26 @@ export default function App() {
   };
 
   // Função para enviar os dados atuais ao Supabase
-  const sendDadosToCloud = async (userId: string) => {
+  const sendDadosToCloud = async (userId?: string) => {
     if (!isSupabaseConfigured) return;
     try {
       setIsSyncingCloud(true);
       setSyncError(null);
+
+      // 1. Obter e validar sessão ativa no Supabase antes de tentar sincronizar
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      let currentSession = sessionData?.session;
+
+      const activeUserId = currentSession?.user?.id || userId;
+      if (sessionErr || !currentSession || !activeUserId || !activeUserId.trim()) {
+        console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
+        if (userSession) {
+          setUserSession(null);
+          setUserProfile(null);
+        }
+        return;
+      }
+
       const planejamentoSemanalRaw = localStorage.getItem('superestrategico_planejamento_semanal');
       const planejamentoSemanal = planejamentoSemanalRaw ? JSON.parse(planejamentoSemanalRaw) : null;
 
@@ -316,7 +331,7 @@ export default function App() {
       };
       
       const payload = {
-        user_id: userId,
+        user_id: activeUserId,
         updated_at: new Date().toISOString(),
         materias: materias ?? [],
         ciclo: ciclo ?? {},
@@ -327,9 +342,31 @@ export default function App() {
         configuracoes
       };
 
-      const { error } = await supabase
+      let { error } = await supabase
         .from('user_data_sync')
         .upsert(payload, { onConflict: 'user_id' });
+
+      // Se a sessão expirou (erro 42501 RLS), tenta renovar o token via refreshSession e retenta
+      if (error && (error.code === '42501' || error.message?.includes('row-level security'))) {
+        console.warn('Erro de RLS detectado, tentando renovar sessão com refreshSession()...');
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed?.session) {
+          setUserSession(refreshed.session);
+          const retry = await supabase
+            .from('user_data_sync')
+            .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' });
+          error = retry.error;
+        } else {
+          // Token não pôde ser renovado automaticamente: limpa a sessão e avisa o usuário
+          setUserSession(null);
+          setUserProfile(null);
+          setSyncError({
+            friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
+            technical: `[42501]: ${error.message}`
+          });
+          return;
+        }
+      }
 
       if (error) throw error;
 
@@ -338,7 +375,7 @@ export default function App() {
       if (unsyncedLogs.length > 0) {
         const logsPayload = unsyncedLogs.map(p => ({
           id: p.id,
-          user_id: userId,
+          user_id: activeUserId,
           materia_id: p.materiaId,
           aula_id: p.aulaId || null,
           duracao_minutos: p.duracaoMinutos,
@@ -865,9 +902,11 @@ export default function App() {
     }
 
     // Sem reload necessário — configurações são aplicadas em runtime
-    // Força re-sync para atualizar o estado local
+    // Força re-sync para atualizar o estado local se logado
     skipSyncCount.current = 1;
-    sendDadosToCloud(userSession?.user?.id || '');
+    if (userSession?.user?.id) {
+      sendDadosToCloud(userSession.user.id);
+    }
   };
 
 
@@ -1277,7 +1316,13 @@ export default function App() {
                 userEmail={userSession?.user?.email}
                 onOpenAuth={() => setShowAuthModal(true)}
                 onLogout={handleLogout}
-                onSyncCloud={() => sendDadosToCloud(userSession?.user?.id)}
+                onSyncCloud={async () => {
+                  if (userSession?.user?.id) {
+                    await sendDadosToCloud(userSession.user.id);
+                  } else {
+                    setShowAuthModal(true);
+                  }
+                }}
                 isSyncingCloud={isSyncingCloud}
                 lastSyncCloudTime={lastSyncCloudTime}
                 onResetDadosEstudo={handleResetarDadosEstudo}
@@ -1338,6 +1383,16 @@ export default function App() {
               <span>{syncError.friendly}</span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setSyncError(null);
+                  setShowAuthModal(true);
+                }}
+                className="text-[10px] bg-[#C5A059] text-black font-bold px-2 py-1 rounded hover:bg-[#C5A059]/90 cursor-pointer uppercase transition-all"
+              >
+                Fazer Login
+              </button>
               <button
                 type="button"
                 onClick={() => {
