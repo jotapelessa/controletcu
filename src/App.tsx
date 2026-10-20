@@ -70,6 +70,55 @@ export default function App() {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [cmsContent, setCmsContent] = useState<any>(null);
 
+  // Obter e validar sessão ativa no Supabase (renovando proativamente se expirada ou prestes a expirar)
+  const getValidSession = async (): Promise<any | null> => {
+    if (!isSupabaseConfigured) return null;
+    try {
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr) {
+        console.warn('Erro ao obter sessão no Supabase:', sessionErr);
+        await supabase.auth.signOut().catch(() => {});
+        setUserSession(null);
+        setUserProfile(null);
+        return null;
+      }
+
+      let session = sessionData?.session;
+      if (!session) return null;
+
+      // Se a sessão expirou ou está a menos de 60 segundos de expirar, tenta renovar proativamente
+      const isExpiredOrExpiring = session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
+      if (isExpiredOrExpiring) {
+        console.info('Sessão expirada ou prestes a expirar. Renovando token via refreshSession()...');
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed?.session) {
+          session = refreshed.session;
+          setUserSession(session);
+        } else {
+          console.warn('refreshSession falhou ou refresh_token expirado:', refreshErr);
+          await supabase.auth.signOut().catch(() => {});
+          setUserSession(null);
+          setUserProfile(null);
+          return null;
+        }
+      }
+
+      if (!session.access_token || !session.user?.id) {
+        await supabase.auth.signOut().catch(() => {});
+        setUserSession(null);
+        setUserProfile(null);
+        return null;
+      }
+
+      return session;
+    } catch (err) {
+      console.warn('Exceção ao validar sessão no Supabase:', err);
+      setUserSession(null);
+      setUserProfile(null);
+      return null;
+    }
+  };
+
   const fetchAndSetProfile = async (userId: string, userEmail?: string) => {
     if (!isSupabaseConfigured) return;
     try {
@@ -81,6 +130,23 @@ export default function App() {
       
       if (error) {
         console.error('Erro ao obter perfil do usuário:', error);
+
+        // Se o erro for de autenticação ou RLS, a sessão expirou/não é válida: limpa e aborta
+        if (
+          error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          (error as any).status === 401 ||
+          (error as any).status === 403 ||
+          error.message?.includes('row-level security') ||
+          error.message?.includes('JWT')
+        ) {
+          console.warn('fetchAndSetProfile: erro de autenticação/RLS ao buscar perfil:', error);
+          await supabase.auth.signOut().catch(() => {});
+          setUserSession(null);
+          setUserProfile(null);
+          return;
+        }
+
         if (error.code === 'PGRST116') {
           // Tentar criar perfil manualmente caso a trigger atrase
           const emailVal = userEmail || '';
@@ -94,10 +160,24 @@ export default function App() {
             })
             .select()
             .single();
+
           if (!insertError && newProfile) {
             setUserProfile(newProfile);
           } else {
-            // Se falhar a inserção (ex: RLS), define perfil padrão ativo para não travar o app
+            if (
+              insertError &&
+              (insertError.code === '42501' ||
+                insertError.code === 'PGRST301' ||
+                (insertError as any).status === 401 ||
+                (insertError as any).status === 403 ||
+                insertError.message?.includes('row-level security'))
+            ) {
+              console.warn('fetchAndSetProfile: RLS negado ao criar perfil:', insertError);
+              await supabase.auth.signOut().catch(() => {});
+              setUserSession(null);
+              setUserProfile(null);
+              return;
+            }
             setUserProfile({
               id: userId,
               email: emailVal,
@@ -106,7 +186,7 @@ export default function App() {
             });
           }
         } else {
-          // Qualquer outro erro, define perfil padrão ativo para não travar o usuário
+          // Outro erro temporário
           setUserProfile({
             id: userId,
             email: userEmail || '',
@@ -127,7 +207,6 @@ export default function App() {
       }
     } catch (err) {
       console.error('Exceção ao buscar perfil:', err);
-      // Fallback em caso de exceção crítica
       setUserProfile({
         id: userId,
         email: userEmail || '',
@@ -168,11 +247,10 @@ export default function App() {
     }
 
     if (isSupabaseConfigured) {
-      // Obter sessão atual
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        setUserSession(session);
+      // 1. Obter e validar sessão atual de forma proativa
+      getValidSession().then((session) => {
         if (session) {
-          // Usa flag para evitar chamada dupla com onAuthStateChange
+          setUserSession(session);
           if (!isSyncingFromCloud.current) {
             isSyncingFromCloud.current = true;
             // 5 states podem ser atualizados pela nuvem + userSession = 6 skips
@@ -183,14 +261,31 @@ export default function App() {
           }
           fetchAndSetProfile(session.user.id, session.user.email);
         } else {
+          setUserSession(null);
           setUserProfile(null);
         }
       });
 
-      // Ouvir mudanças de autenticação
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setUserSession(session);
-        if (session) {
+      // 2. Ouvir mudanças de autenticação
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'INITIAL_SESSION') {
+          // Já validado na inicialização proativa por getValidSession()
+          return;
+        }
+
+        if (event === 'SIGNED_OUT' || !session) {
+          setUserSession(null);
+          setUserProfile(null);
+          setSyncError(null);
+          localStorage.removeItem('superestrategico_last_sync_cloud_time');
+          setLastSyncCloudTime('');
+          isSyncingFromCloud.current = false;
+          return;
+        }
+
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+          setUserSession(session);
+          setSyncError(null);
           if (!isSyncingFromCloud.current) {
             isSyncingFromCloud.current = true;
             skipSyncCount.current = 6;
@@ -199,11 +294,6 @@ export default function App() {
             });
           }
           fetchAndSetProfile(session.user.id, session.user.email);
-        } else {
-          setUserProfile(null);
-          localStorage.removeItem('superestrategico_last_sync_cloud_time');
-          setLastSyncCloudTime('');
-          isSyncingFromCloud.current = false;
         }
       });
 
@@ -280,46 +370,6 @@ export default function App() {
     }
   };
 
-  // Obter e validar sessão ativa no Supabase (renovando se expirada ou prestes a expirar)
-  const getValidSession = async (): Promise<any | null> => {
-    if (!isSupabaseConfigured) return null;
-    try {
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-      if (sessionErr) {
-        console.warn('Erro ao obter sessão no Supabase:', sessionErr);
-        await supabase.auth.signOut().catch(() => {});
-        return null;
-      }
-
-      let session = sessionData?.session;
-      if (!session) return null;
-
-      // Se a sessão expirou ou está a menos de 60 segundos de expirar, tenta renovar
-      const isExpiredOrExpiring = session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
-      if (isExpiredOrExpiring) {
-        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
-        if (!refreshErr && refreshed?.session) {
-          session = refreshed.session;
-          setUserSession(session);
-        } else {
-          console.warn('refreshSession falhou ou refresh_token expirado:', refreshErr);
-          await supabase.auth.signOut().catch(() => {});
-          return null;
-        }
-      }
-
-      if (!session.access_token || !session.user?.id) {
-        await supabase.auth.signOut().catch(() => {});
-        return null;
-      }
-
-      return session;
-    } catch (err) {
-      console.warn('Exceção ao validar sessão no Supabase:', err);
-      return null;
-    }
-  };
-
   // Função para enviar os dados atuais ao Supabase
   const sendDadosToCloud = async (userId?: string) => {
     if (!isSupabaseConfigured) return;
@@ -328,10 +378,8 @@ export default function App() {
     const session = await getValidSession();
     if (!session || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      if (userSession) {
-        setUserSession(null);
-        setUserProfile(null);
-      }
+      setUserSession(null);
+      setUserProfile(null);
       return;
     }
 
@@ -387,8 +435,15 @@ export default function App() {
         .upsert(payload, { onConflict: 'user_id' });
 
       // Se a sessão expirou durante a requisição (erro 42501 RLS), tenta renovar o token via refreshSession e retenta
-      if (error && (error.code === '42501' || error.message?.includes('row-level security'))) {
-        console.warn('Erro de RLS detectado, tentando renovar sessão com refreshSession()...');
+      if (
+        error &&
+        (error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          (error as any).status === 401 ||
+          (error as any).status === 403 ||
+          error.message?.includes('row-level security'))
+      ) {
+        console.warn('Erro de RLS detectado no envio, tentando renovar sessão com refreshSession()...');
         const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
         if (!refreshErr && refreshed?.session) {
           setUserSession(refreshed.session);
@@ -397,27 +452,30 @@ export default function App() {
             .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' });
           error = retry.error;
         } else {
-          // Token não pôde ser renovado automaticamente: limpa a sessão e avisa o usuário sem rethrow
+          // Token não pôde ser renovado: limpa a sessão e aborta silenciosamente sem toast de erro RLS
+          console.warn('Token expirado não pôde ser renovado. Encerrando sessão.');
           await supabase.auth.signOut().catch(() => {});
           setUserSession(null);
           setUserProfile(null);
-          setSyncError({
-            friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
-            technical: `[42501]: ${error.message}`
-          });
+          setSyncError(null);
           return;
         }
       }
 
       // Se após a retentativa ainda houver erro de RLS 42501
-      if (error && (error.code === '42501' || error.message?.includes('row-level security'))) {
+      if (
+        error &&
+        (error.code === '42501' ||
+          error.code === 'PGRST301' ||
+          (error as any).status === 401 ||
+          (error as any).status === 403 ||
+          error.message?.includes('row-level security'))
+      ) {
+        console.warn('Erro RLS 42501 persistiu no envio. Encerrando sessão limpa.');
         await supabase.auth.signOut().catch(() => {});
         setUserSession(null);
         setUserProfile(null);
-        setSyncError({
-          friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
-          technical: `[42501]: ${error.message}`
-        });
+        setSyncError(null);
         return;
       }
 
@@ -445,14 +503,18 @@ export default function App() {
           .upsert(logsPayload, { onConflict: 'id' });
 
         if (logsError) {
-          if (logsError.code === '42501' || logsError.message?.includes('row-level security')) {
+          if (
+            logsError.code === '42501' ||
+            logsError.code === 'PGRST301' ||
+            (logsError as any).status === 401 ||
+            (logsError as any).status === 403 ||
+            logsError.message?.includes('row-level security')
+          ) {
+            console.warn('Erro RLS ao enviar historico_logs. Encerrando sessão limpa.');
             await supabase.auth.signOut().catch(() => {});
             setUserSession(null);
             setUserProfile(null);
-            setSyncError({
-              friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
-              technical: `[42501]: ${logsError.message}`
-            });
+            setSyncError(null);
             return;
           }
           throw logsError;
@@ -480,14 +542,17 @@ export default function App() {
       }, 2500);
     } catch (err: any) {
       console.error('Erro ao enviar dados para o Supabase:', err);
-      if (err?.code === '42501' || err?.message?.includes('row-level security')) {
+      if (
+        err?.code === '42501' ||
+        err?.code === 'PGRST301' ||
+        err?.status === 401 ||
+        err?.status === 403 ||
+        err?.message?.includes('row-level security')
+      ) {
         await supabase.auth.signOut().catch(() => {});
         setUserSession(null);
         setUserProfile(null);
-        setSyncError({
-          friendly: "Sua sessão expirou. Faça login novamente para continuar sincronizando na nuvem.",
-          technical: `[42501]: ${err.message || ''}`
-        });
+        setSyncError(null);
       } else {
         setSyncError(getFriendlySyncErrorMessage(err));
       }
@@ -504,10 +569,8 @@ export default function App() {
     const session = await getValidSession();
     if (!session || !session.user?.id) {
       console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      if (userSession) {
-        setUserSession(null);
-        setUserProfile(null);
-      }
+      setUserSession(null);
+      setUserProfile(null);
       return;
     }
 
@@ -539,6 +602,7 @@ export default function App() {
         await supabase.auth.signOut().catch(() => {});
         setUserSession(null);
         setUserProfile(null);
+        setSyncError(null);
         return;
       }
 
@@ -566,6 +630,7 @@ export default function App() {
           await supabase.auth.signOut().catch(() => {});
           setUserSession(null);
           setUserProfile(null);
+          setSyncError(null);
           return;
         }
         // Não bloqueia o sync principal, apenas loga o erro de histórico
@@ -666,10 +731,17 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Erro ao sincronizar dados da nuvem Supabase:', err);
-      if (err?.code === '42501' || err?.message?.includes('row-level security') || err?.code === 'PGRST301') {
+      if (
+        err?.code === '42501' ||
+        err?.code === 'PGRST301' ||
+        err?.status === 401 ||
+        err?.status === 403 ||
+        err?.message?.includes('row-level security')
+      ) {
         await supabase.auth.signOut().catch(() => {});
         setUserSession(null);
         setUserProfile(null);
+        setSyncError(null);
       } else {
         setSyncError(getFriendlySyncErrorMessage(err));
       }
@@ -683,6 +755,7 @@ export default function App() {
     await supabase.auth.signOut();
     setUserSession(null);
     setUserProfile(null);
+    setSyncError(null);
     localStorage.removeItem('superestrategico_last_sync_cloud_time');
     setLastSyncCloudTime('');
     syncedLogIds.current.clear();
@@ -917,30 +990,33 @@ export default function App() {
       
       syncedLogIds.current.clear();
 
-      // Se logado, envia dados limpos para a nuvem antes do reload
-      if (userSession && isSupabaseConfigured) {
-        try {
-          await supabase
-            .from('user_data_sync')
-            .upsert({
-              user_id: userSession.user.id,
-              updated_at: new Date().toISOString(),
-              materias: MATERIAS_PADRAO,
-              ciclo: CICLO_PADRAO,
-              simulados: [],
-              revisoes: [],
-              historico: [],
-              planejamento_semanal: null,
-              configuracoes: {}
-            }, { onConflict: 'user_id' });
+      // Se logado com sessão válida, envia dados limpos para a nuvem antes do reload
+      if (isSupabaseConfigured) {
+        const session = await getValidSession();
+        if (session?.user?.id) {
+          try {
+            await supabase
+              .from('user_data_sync')
+              .upsert({
+                user_id: session.user.id,
+                updated_at: new Date().toISOString(),
+                materias: MATERIAS_PADRAO,
+                ciclo: CICLO_PADRAO,
+                simulados: [],
+                revisoes: [],
+                historico: [],
+                planejamento_semanal: null,
+                configuracoes: {}
+              }, { onConflict: 'user_id' });
 
-          // Remove logs de histórico da nuvem também
-          await supabase
-            .from('historico_logs')
-            .delete()
-            .eq('user_id', userSession.user.id);
-        } catch (err) {
-          console.error('Erro ao redefinir dados gerais na nuvem:', err);
+            // Remove logs de histórico da nuvem também
+            await supabase
+              .from('historico_logs')
+              .delete()
+              .eq('user_id', session.user.id);
+          } catch (err) {
+            console.error('Erro ao redefinir dados gerais na nuvem:', err);
+          }
         }
       }
 
@@ -970,30 +1046,33 @@ export default function App() {
 
     syncedLogIds.current.clear();
 
-    // Se logado, envia dados limpos para a nuvem antes do reload
+    // Se logado com sessão válida, envia dados limpos para a nuvem antes do reload
     // para sobrescrever o histórico antigo e evitar que o sync restaure os dados deletados
-    if (userSession && isSupabaseConfigured) {
-      try {
-        await supabase
-          .from('user_data_sync')
-          .upsert({
-            user_id: userSession.user.id,
-            updated_at: new Date().toISOString(),
-            materias: MATERIAS_PADRAO,
-            ciclo: CICLO_PADRAO,
-            simulados: [],
-            revisoes: [],
-            historico: [],
-            planejamento_semanal: planejamentoSemanal
-          }, { onConflict: 'user_id' });
+    if (isSupabaseConfigured) {
+      const session = await getValidSession();
+      if (session?.user?.id) {
+        try {
+          await supabase
+            .from('user_data_sync')
+            .upsert({
+              user_id: session.user.id,
+              updated_at: new Date().toISOString(),
+              materias: MATERIAS_PADRAO,
+              ciclo: CICLO_PADRAO,
+              simulados: [],
+              revisoes: [],
+              historico: [],
+              planejamento_semanal: planejamentoSemanal
+            }, { onConflict: 'user_id' });
 
-        // Remove logs de histórico da nuvem também
-        await supabase
-          .from('historico_logs')
-          .delete()
-          .eq('user_id', userSession.user.id);
-      } catch (err) {
-        console.error('Erro ao limpar dados de estudo na nuvem:', err);
+          // Remove logs de histórico da nuvem também
+          await supabase
+            .from('historico_logs')
+            .delete()
+            .eq('user_id', session.user.id);
+        } catch (err) {
+          console.error('Erro ao limpar dados de estudo na nuvem:', err);
+        }
       }
     }
 
@@ -1018,22 +1097,21 @@ export default function App() {
     ];
     configKeys.forEach(k => localStorage.removeItem(k));
 
-    // Se logado, atualiza configurações na nuvem com objeto vazio
-    if (userSession && isSupabaseConfigured) {
-      supabase
-        .from('user_data_sync')
-        .update({ configuracoes: {} })
-        .eq('user_id', userSession.user.id)
-        .then(({ error }) => {
-          if (error) console.error('Erro ao limpar configurações na nuvem:', error);
-        });
-    }
-
-    // Sem reload necessário — configurações são aplicadas em runtime
-    // Força re-sync para atualizar o estado local se logado
-    skipSyncCount.current = 1;
-    if (userSession?.user?.id) {
-      sendDadosToCloud(userSession.user.id);
+    // Se logado com sessão válida, atualiza configurações na nuvem com objeto vazio
+    if (isSupabaseConfigured) {
+      getValidSession().then((session) => {
+        if (session?.user?.id) {
+          supabase
+            .from('user_data_sync')
+            .update({ configuracoes: {} })
+            .eq('user_id', session.user.id)
+            .then(({ error }) => {
+              if (error) console.error('Erro ao limpar configurações na nuvem:', error);
+            });
+          skipSyncCount.current = 1;
+          sendDadosToCloud(session.user.id);
+        }
+      });
     }
   };
 
