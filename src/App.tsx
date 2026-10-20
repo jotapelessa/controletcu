@@ -59,10 +59,7 @@ export default function App() {
   const isAuthOrRlsError = (err: any): boolean => {
     if (!err) return false;
     const code = String(err.code || err.status || '');
-    const name = String(err.name || '');
-    const errType = String(err.error || '');
     const msg = String(err.message || err.error_description || err.details || (typeof err === 'string' ? err : ''));
-    const fullStr = typeof err === 'string' ? err : JSON.stringify(err);
     return (
       code === '42501' ||
       code === 'PGRST301' ||
@@ -70,19 +67,8 @@ export default function App() {
       code === '403' ||
       err.status === 401 ||
       err.status === 403 ||
-      errType === 'invalid_grant' ||
-      name.includes('Auth') ||
       msg.includes('42501') ||
-      msg.toUpperCase().includes('PGRST301') ||
-      msg.toLowerCase().includes('row-level security') ||
-      msg.toLowerCase().includes('violates row-level security policy') ||
-      msg.toLowerCase().includes('jwt') ||
-      msg.toLowerCase().includes('token') ||
-      msg.toLowerCase().includes('not authenticated') ||
-      msg.toLowerCase().includes('permission denied') ||
-      msg.toLowerCase().includes('invalid refresh token') ||
-      fullStr.includes('42501') ||
-      fullStr.toUpperCase().includes('PGRST301')
+      msg.toUpperCase().includes('PGRST301')
     );
   };
 
@@ -390,17 +376,10 @@ export default function App() {
   const sendDadosToCloud = async (userId?: string): Promise<boolean> => {
     if (!isSupabaseConfigured) return false;
 
-    // 1. Obter e validar estritamente a sessão ativa antes de fazer qualquer chamada
+    // 1. Obter e validar a sessão ativa antes de fazer qualquer chamada
     const session = await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      if (userSession || userId) {
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
-        supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-        setShowAuthModal(true);
-      }
       return false;
     }
 
@@ -480,11 +459,6 @@ export default function App() {
           upsertData = retry.data;
         } else {
           console.warn('Token expirado não pôde ser renovado na nuvem.');
-          setUserSession(null);
-          setUserProfile(null);
-          setSyncError(null);
-          supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-          setShowAuthModal(true);
           return false;
         }
       }
@@ -492,11 +466,6 @@ export default function App() {
       // Se o erro de RLS/Auth persistir mesmo após o retry
       if (isAuthOrRlsError(error)) {
         console.warn('Erro de RLS/Auth persistiu após tentativa de renovação.');
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
-        supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-        setShowAuthModal(true);
         return false;
       }
 
@@ -552,14 +521,7 @@ export default function App() {
 
         if (logsError) {
           console.warn('Aviso ao sincronizar historico_logs com a nuvem:', logsError);
-          if (isAuthOrRlsError(logsError)) {
-            setUserSession(null);
-            setUserProfile(null);
-            setSyncError(null);
-            supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-            setShowAuthModal(true);
-            return false;
-          }
+          return false;
         } else {
           // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
           unsyncedLogs.forEach(log => {
@@ -595,13 +557,7 @@ export default function App() {
       return true;
     } catch (err: any) {
       console.warn('Aviso ao enviar dados para o Supabase:', err);
-      if (isAuthOrRlsError(err)) {
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
-        supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-        setShowAuthModal(true);
-      } else {
+      if (!isAuthOrRlsError(err)) {
         setSyncError(getFriendlySyncErrorMessage(err));
       }
       return false;
@@ -652,9 +608,6 @@ export default function App() {
           error = retry.error;
         } else {
           console.warn('syncDadosFromCloud: sessão expirada não pôde ser renovada.');
-          setUserSession(null);
-          setUserProfile(null);
-          setSyncError(null);
           return;
         }
       }
@@ -662,9 +615,6 @@ export default function App() {
       // Se ainda for erro de RLS ou autenticação após retry, aborta silenciosamente sem disparar toast de erro
       if (isAuthOrRlsError(error)) {
         console.warn('syncDadosFromCloud: erro de RLS/autenticação persistiu ao carregar dados:', error);
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
         return;
       }
 
@@ -860,9 +810,6 @@ export default function App() {
 
     const session = await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
-      setUserSession(null);
-      setUserProfile(null);
-      setSyncError(null);
       setShowAuthModal(true);
       return;
     }
@@ -1291,15 +1238,7 @@ export default function App() {
         {showAuthModal && (
           <SupabaseAuthModal
             onClose={() => setShowAuthModal(false)}
-            onSuccess={async (newSession) => {
-              setShowAuthModal(false);
-              const session = newSession || (await supabase.auth.getSession()).data?.session;
-              if (session) {
-                setUserSession(session);
-                await fetchAndSetProfile(session.user.id, session.user.email);
-                syncDadosFromCloud(session.user.id);
-              }
-            }}
+            onSuccess={() => setShowAuthModal(false)}
           />
         )}
       </>
@@ -1682,15 +1621,7 @@ export default function App() {
       {showAuthModal && (
         <SupabaseAuthModal
           onClose={() => setShowAuthModal(false)}
-          onSuccess={async (newSession) => {
-            setShowAuthModal(false);
-            const session = newSession || (await supabase.auth.getSession()).data?.session;
-            if (session) {
-              setUserSession(session);
-              await fetchAndSetProfile(session.user.id, session.user.email);
-              syncDadosFromCloud(session.user.id);
-            }
-          }}
+          onSuccess={() => setShowAuthModal(false)}
         />
       )}
 
