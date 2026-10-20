@@ -564,6 +564,11 @@ async function main() {
 
   // Upsert
   SUB('PASSO 4: Inserir/Atualizar dados no banco (UPSERT)');
+  const scopedHistorico = HISTORICO_SEED.map(p => ({
+    ...p,
+    id: `${userId}_${p.id.replace(userId + '_', '')}`
+  }));
+
   const payload = {
     user_id:              userId,
     updated_at:           new Date().toISOString(),
@@ -571,13 +576,35 @@ async function main() {
     ciclo:                CICLO_SEED,
     simulados:            SIMULADOS_SEED,
     revisoes:             REVISOES_SEED,
-    historico:            HISTORICO_SEED,
+    historico:            scopedHistorico,
     planejamento_semanal: PLANEJAMENTO_SEED,
   };
 
   const { error: upsertErr } = await client.from('user_data_sync').upsert(payload, { onConflict: 'user_id' });
   if (upsertErr) { FAIL(`UPSERT falhou: ${upsertErr.message} (${upsertErr.code})`); process.exit(1); }
-  OK('UPSERT executado com sucesso!');
+  OK('UPSERT em user_data_sync executado com sucesso!');
+
+  SUB('PASSO 4.1: Inserir/Atualizar logs em historico_logs');
+  const logsPayload = scopedHistorico.map(p => ({
+    id: p.id,
+    user_id: userId,
+    materia_id: p.materiaId,
+    aula_id: p.aulaId || null,
+    duracao_minutos: p.duracaoMinutos,
+    questoes_resolvidas: p.questoesResolvidas,
+    questoes_acertadas: p.questoesAcertadas,
+    questoes_erradas: p.questoesErradas,
+    tipo: p.tipo,
+    comentarios: p.comentarios || null,
+    data: p.data
+  }));
+
+  const { error: logsUpsertErr } = await client.from('historico_logs').upsert(logsPayload, { onConflict: 'id' });
+  if (logsUpsertErr) {
+    FAIL(`UPSERT em historico_logs falhou: ${logsUpsertErr.message} (${logsUpsertErr.code})`);
+    process.exit(1);
+  }
+  OK(`historico_logs: ${logsPayload.length} sessões inseridas com sucesso!`);
 
   // Verificação
   SUB('PASSO 5: Verificar integridade dos dados');
@@ -589,9 +616,13 @@ async function main() {
   OK(`Matérias no banco: ${materiasNoDb.length}/17`);
   OK(`Aulas no banco: ${aulasNoDb}/${totalAulas}`);
   OK(`Simulados: ${(row.simulados as any[]).length}`);
-  OK(`Histórico: ${(row.historico as any[]).length} sessões`);
+  OK(`Histórico em user_data_sync: ${(row.historico as any[]).length} sessões`);
   OK(`Revisões: ${(row.revisoes as any[]).length}`);
   OK(`Ciclo: "${row.ciclo?.nome}"`);
+
+  const { data: dbLogsCount, error: dbLogsErr } = await client.from('historico_logs').select('id').eq('user_id', userId);
+  if (dbLogsErr) { FAIL(`Erro ao verificar historico_logs: ${dbLogsErr.message}`); process.exit(1); }
+  OK(`Logs normalizados em historico_logs: ${dbLogsCount?.length ?? 0}`);
 
   // Listar matérias para conferência
   console.log('\n  Matérias inseridas:');
@@ -602,8 +633,12 @@ async function main() {
   // RLS
   SUB('PASSO 6: Verificar isolamento RLS');
   const { data: isolation } = await client.from('user_data_sync').select('*').eq('user_id', '00000000-0000-0000-0000-000000000000');
-  if (!isolation || isolation.length === 0) OK('RLS ativo: dados de outros usuários inacessíveis. ✔');
-  else FAIL('FALHA DE SEGURANÇA: RLS não está filtrando por user_id!');
+  if (!isolation || isolation.length === 0) OK('RLS ativo em user_data_sync: dados de outros usuários inacessíveis. ✔');
+  else FAIL('FALHA DE SEGURANÇA: RLS não está filtrando por user_id em user_data_sync!');
+
+  const { data: isolationLogs } = await client.from('historico_logs').select('*').eq('user_id', '00000000-0000-0000-0000-000000000000');
+  if (!isolationLogs || isolationLogs.length === 0) OK('RLS ativo em historico_logs: dados de outros usuários inacessíveis. ✔');
+  else FAIL('FALHA DE SEGURANÇA: RLS não está filtrando por user_id em historico_logs!');
 
   HEAD('✅ SEED COMPLETO — SUCESSO TOTAL');
   OK(`Usuário de teste: ${TEST_EMAIL}`);

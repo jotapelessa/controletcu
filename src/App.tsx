@@ -10,7 +10,7 @@ import SimuladosBanca from './components/SimuladosBanca';
 import IADiagnostico from './components/IADiagnostico';
 import DadosEBackup from './components/DadosEBackup';
 import { motion, AnimatePresence } from 'motion/react';
-import { Shield, BookOpen, Clock, Calendar, Award, Sparkles, LogOut, CheckCircle, Flame, User, ListCollapse, ShieldAlert } from 'lucide-react';
+import { Shield, BookOpen, Clock, Calendar, Award, Sparkles, LogOut, CheckCircle, Flame, User, ListCollapse, ShieldAlert, RefreshCw } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './lib/supabase';
 import SupabaseAuthModal from './components/SupabaseAuthModal';
 import Homepage, { DEFAULT_CMS_CONTENT } from './components/Homepage';
@@ -35,10 +35,8 @@ export default function App() {
     return localStorage.getItem('superestrategico_last_sync_cloud_time') || '';
   });
   
-  // Contador de skips: cada update de estado vindo da nuvem incrementa; o useEffect decrementa e ignora
-  const skipSyncCount = useRef(0);
   const syncedLogIds = useRef<Set<string>>(new Set());
-  // Flag para evitar chamada dupla de syncDadosFromCloud (getSession + onAuthStateChange)
+  // Flag booleana para evitar ciclo de auto-sync durante download/sincronização de dados da nuvem
   const isSyncingFromCloud = useRef(false);
   // Estado de erro de sync visível ao usuário
   const [syncError, setSyncError] = useState<{ friendly: string; technical: string } | null>(null);
@@ -206,12 +204,7 @@ export default function App() {
         if (session) {
           setUserSession(session);
           if (!isSyncingFromCloud.current) {
-            isSyncingFromCloud.current = true;
-            // 5 states podem ser atualizados pela nuvem + userSession = 6 skips
-            skipSyncCount.current = 6;
-            syncDadosFromCloud(session.user.id).finally(() => {
-              isSyncingFromCloud.current = false;
-            });
+            syncDadosFromCloud(session.user.id);
           }
           fetchAndSetProfile(session.user.id, session.user.email);
         } else {
@@ -244,11 +237,7 @@ export default function App() {
           setUserSession(session);
           setSyncError(null);
           if (!isSyncingFromCloud.current) {
-            isSyncingFromCloud.current = true;
-            skipSyncCount.current = 6;
-            syncDadosFromCloud(session.user.id).finally(() => {
-              isSyncingFromCloud.current = false;
-            });
+            syncDadosFromCloud(session.user.id);
           }
           fetchAndSetProfile(session.user.id, session.user.email);
         }
@@ -271,9 +260,8 @@ export default function App() {
   useEffect(() => {
     if (!userSession || !isSupabaseConfigured) return;
 
-    // Se ainda há skips pendentes (dados sendo carregados da nuvem), decrementa e ignora
-    if (skipSyncCount.current > 0) {
-      skipSyncCount.current -= 1;
+    // Se estiver sincronizando da nuvem, ignora mudanças para evitar loop
+    if (isSyncingFromCloud.current) {
       return;
     }
 
@@ -282,7 +270,9 @@ export default function App() {
     }, 1500);
 
     const handleConfigUpdated = () => {
-      sendDadosToCloud(userSession.user.id);
+      if (!isSyncingFromCloud.current) {
+        sendDadosToCloud(userSession.user.id);
+      }
     };
     window.addEventListener('superestrategico_config_updated', handleConfigUpdated);
 
@@ -382,7 +372,7 @@ export default function App() {
         ciclo: ciclo ?? {},
         simulados: simulados ?? [],
         revisoes: revisoes ?? [],
-        historico: [], // Satisfaz o NOT NULL mas ocupa espaço mínimo (economia de egress)
+        historico: historico ?? [], // Mantém snapshot completo no user_data_sync
         planejamento_semanal: planejamentoSemanal,
         configuracoes
       };
@@ -420,21 +410,29 @@ export default function App() {
       }
 
       // Sincronizar novos logs locais com a tabela historico_logs (delta sync)
-      const unsyncedLogs = historico.filter(log => !syncedLogIds.current.has(log.id));
+      // Prefixar IDs com activeUserId para evitar conflito RLS 42501 entre usuários
+      const unsyncedLogs = historico.filter(log => {
+        const scopedId = `${activeUserId}_${log.id.replace(activeUserId + '_', '')}`;
+        return !syncedLogIds.current.has(log.id) && !syncedLogIds.current.has(scopedId);
+      });
+
       if (unsyncedLogs.length > 0) {
-        const logsPayload = unsyncedLogs.map(p => ({
-          id: p.id,
-          user_id: activeUserId,
-          materia_id: p.materiaId,
-          aula_id: p.aulaId || null,
-          duracao_minutos: p.duracaoMinutos,
-          questoes_resolvidas: p.questoesResolvidas,
-          questoes_acertadas: p.questoesAcertadas,
-          questoes_erradas: p.questoesErradas,
-          tipo: p.tipo,
-          comentarios: p.comentarios || null,
-          data: p.data
-        }));
+        const logsPayload = unsyncedLogs.map(p => {
+          const scopedId = `${activeUserId}_${p.id.replace(activeUserId + '_', '')}`;
+          return {
+            id: scopedId,
+            user_id: activeUserId,
+            materia_id: p.materiaId,
+            aula_id: p.aulaId || null,
+            duracao_minutos: p.duracaoMinutos,
+            questoes_resolvidas: p.questoesResolvidas,
+            questoes_acertadas: p.questoesAcertadas,
+            questoes_erradas: p.questoesErradas,
+            tipo: p.tipo,
+            comentarios: p.comentarios || null,
+            data: p.data
+          };
+        });
 
         const { error: logsError } = await supabase
           .from('historico_logs')
@@ -444,7 +442,10 @@ export default function App() {
           console.warn('Aviso ao sincronizar historico_logs com a nuvem:', logsError);
         } else {
           // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
-          unsyncedLogs.forEach(log => syncedLogIds.current.add(log.id));
+          unsyncedLogs.forEach(log => {
+            syncedLogIds.current.add(log.id);
+            syncedLogIds.current.add(`${activeUserId}_${log.id.replace(activeUserId + '_', '')}`);
+          });
         }
       }
 
@@ -452,7 +453,7 @@ export default function App() {
       const nowRaw = Date.now();
       localStorage.setItem('superestrategico_last_sync_time_raw', nowRaw.toString());
       
-      const nowStr = new Date().toLocaleString('pt-BR');
+      const nowStr = new Date(nowRaw).toLocaleString('pt-BR');
       setLastSyncCloudTime(nowStr);
       localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
 
@@ -474,11 +475,14 @@ export default function App() {
   // Função para carregar e sincronizar dados da nuvem do Supabase
   const syncDadosFromCloud = async (userId: string) => {
     if (!isSupabaseConfigured) return;
+    if (isSyncingFromCloud.current) return;
+    isSyncingFromCloud.current = true;
 
     // 1. Garantir que uma sessão autenticada válida existe antes de consultar
     const session = await getValidSession();
     if (!session || !session.user?.id) {
       console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
+      isSyncingFromCloud.current = false;
       return;
     }
 
@@ -510,8 +514,15 @@ export default function App() {
         return;
       }
 
-      // PGRST116: Registro não encontrado (válido apenas se não foi erro de autorização)
-      if (error && error.code !== 'PGRST116') {
+      // PGRST116: Registro não encontrado na nuvem
+      // Se ainda não há registro no Supabase, envia os dados locais imediatamente para semear a nuvem
+      if (error && error.code === 'PGRST116') {
+        console.info('Usuário sem registro no Supabase (PGRST116). Semeando dados iniciais para a nuvem...');
+        await sendDadosToCloud(activeUserId);
+        return;
+      }
+
+      if (error) {
         throw error;
       }
 
@@ -526,7 +537,7 @@ export default function App() {
       }
 
       // Mapear logs do banco para formato local
-      const mappedLogs: LogSessao[] = (dbLogs || []).map(p => ({
+      let mappedLogs: LogSessao[] = (dbLogs || []).map(p => ({
         id: p.id,
         data: p.data,
         materiaId: p.materia_id,
@@ -539,6 +550,22 @@ export default function App() {
         comentarios: p.comentarios || undefined
       }));
 
+      // Fallback: se historico_logs estiver vazio, tenta extrair de data.historico em user_data_sync
+      if (mappedLogs.length === 0 && data?.historico && Array.isArray(data.historico) && data.historico.length > 0) {
+        mappedLogs = (data.historico as any[]).map(p => ({
+          id: p.id || `${activeUserId}_log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+          data: p.data || new Date().toISOString(),
+          materiaId: p.materiaId || p.materia_id || '',
+          aulaId: p.aulaId || p.aula_id || '',
+          duracaoMinutos: p.duracaoMinutos ?? p.duracao_minutos ?? 0,
+          questoesResolvidas: p.questoesResolvidas ?? p.questoes_resolvidas ?? 0,
+          questoesAcertadas: p.questoesAcertadas ?? p.questoes_acertadas ?? 0,
+          questoesErradas: p.questoesErradas ?? p.questoes_erradas ?? 0,
+          tipo: p.tipo || 'Teoria (PDF)',
+          comentarios: p.comentarios || undefined
+        }));
+      }
+
       // Ordenar por data decrescente (mais recente primeiro)
       mappedLogs.sort((a, b) => new Date(b.data).getTime() - new Date(a.data).getTime());
 
@@ -546,40 +573,42 @@ export default function App() {
         // Obter timestamps de modificação para saber qual fonte é mais recente
         const cloudTime = new Date(data.updated_at).getTime();
         const localTimeStr = localStorage.getItem('superestrategico_last_sync_time_raw');
-        const localTime = localTimeStr ? parseInt(localTimeStr) : 0;
+        const localTime = localTimeStr ? parseInt(localTimeStr, 10) : 0;
 
         if (cloudTime > localTime) {
-          // Nuvem possui dados mais recentes — define quantos states serão atualizados
-          let statesBeingUpdated = 1; // userSession sempre conta
-          if (data.materias) statesBeingUpdated++;
-          if (data.ciclo) statesBeingUpdated++;
-          if (data.simulados) statesBeingUpdated++;
-          if (data.revisoes) statesBeingUpdated++;
-          if (dbLogs) statesBeingUpdated++; // historico
-          skipSyncCount.current = statesBeingUpdated;
-
-          // Atualiza o browser com dados da nuvem
+          // Nuvem possui dados mais recentes — atualiza o browser com dados da nuvem
           let upgradedMaterias = materias;
-          if (data.materias) {
+          if (data.materias && Array.isArray(data.materias) && data.materias.length > 0) {
             upgradedMaterias = ajustarEMesclarMaterias(data.materias);
             setMaterias(upgradedMaterias);
             salvarMaterias(upgradedMaterias);
           }
 
-          if (data.ciclo) {
+          if (data.ciclo && data.ciclo.itens) {
             const upgradedCiclo = ajustarEMesclarCiclo(data.ciclo, upgradedMaterias);
             setCiclo(upgradedCiclo);
             salvarCiclo(upgradedCiclo);
           }
 
-          if (data.simulados) { setSimulados(data.simulados); salvarSimulados(data.simulados); }
+          if (data.simulados && Array.isArray(data.simulados)) {
+            setSimulados(data.simulados);
+            salvarSimulados(data.simulados);
+          }
 
-          if (data.revisoes) { setRevisoes(data.revisoes); salvarRevisoes(data.revisoes); }
+          if (data.revisoes && Array.isArray(data.revisoes)) {
+            setRevisoes(data.revisoes);
+            salvarRevisoes(data.revisoes);
+          }
 
-          // Atualiza histórico com o que veio da tabela normalizada
-          setHistorico(mappedLogs);
-          salvarHistorico(mappedLogs);
-          syncedLogIds.current = new Set(mappedLogs.map(l => l.id));
+          // Atualiza histórico com o que veio da nuvem
+          if (mappedLogs.length > 0) {
+            setHistorico(mappedLogs);
+            salvarHistorico(mappedLogs);
+            mappedLogs.forEach(l => {
+              syncedLogIds.current.add(l.id);
+              syncedLogIds.current.add(`${activeUserId}_${l.id.replace(activeUserId + '_', '')}`);
+            });
+          }
 
           if (data.planejamento_semanal) {
             localStorage.setItem('superestrategico_planejamento_semanal', JSON.stringify(data.planejamento_semanal));
@@ -589,36 +618,80 @@ export default function App() {
             aplicarConfiguracoesLocais(data.configuracoes);
           }
 
+          // Gravar AMBOS os timestamps no storage
+          localStorage.setItem('superestrategico_last_sync_time_raw', cloudTime.toString());
           const nowStr = new Date(data.updated_at).toLocaleString('pt-BR');
           setLastSyncCloudTime(nowStr);
           localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+
+          // Disparar toast de sucesso
+          if (syncSuccessTimeoutRef.current) {
+            clearTimeout(syncSuccessTimeoutRef.current);
+          }
+          setShowSyncSuccessToast(true);
+          syncSuccessTimeoutRef.current = setTimeout(() => {
+            setShowSyncSuccessToast(false);
+          }, 2500);
         } else if (localTime > cloudTime) {
           // Browser possui alterações mais recentes, faz upload
-          // Só 1 state será alterado (lastSyncCloudTime) — não precisa de skip extra
-          skipSyncCount.current = 1;
           await sendDadosToCloud(activeUserId);
         } else {
-          // Já estão sincronizados — historico pode ser atualizado
-          skipSyncCount.current = 1;
-          setHistorico(mappedLogs);
-          salvarHistorico(mappedLogs);
-          syncedLogIds.current = new Set(mappedLogs.map(l => l.id));
+          // Já estão com o mesmo timestamp: sincroniza histórico se houver
+          if (mappedLogs.length > 0) {
+            setHistorico(mappedLogs);
+            salvarHistorico(mappedLogs);
+            mappedLogs.forEach(l => {
+              syncedLogIds.current.add(l.id);
+              syncedLogIds.current.add(`${activeUserId}_${l.id.replace(activeUserId + '_', '')}`);
+            });
+          } else if (historico.length > 0) {
+            await sendDadosToCloud(activeUserId);
+          }
 
+          localStorage.setItem('superestrategico_last_sync_time_raw', cloudTime.toString());
           const nowStr = new Date(data.updated_at).toLocaleString('pt-BR');
           setLastSyncCloudTime(nowStr);
           localStorage.setItem('superestrategico_last_sync_cloud_time', nowStr);
+
+          // Disparar toast de sucesso
+          if (syncSuccessTimeoutRef.current) {
+            clearTimeout(syncSuccessTimeoutRef.current);
+          }
+          setShowSyncSuccessToast(true);
+          syncSuccessTimeoutRef.current = setTimeout(() => {
+            setShowSyncSuccessToast(false);
+          }, 2500);
         }
-      } else if (!error || error.code === 'PGRST116') {
-        // Usuário novo sem dados na nuvem:
-        // Verifica se é um primeiro run com dados mock — não os envia para a nuvem
-        const isFirstRun = !localStorage.getItem('superestrategico_last_sync_time_raw');
-        if (!isFirstRun) {
-          skipSyncCount.current = 1;
-          await sendDadosToCloud(activeUserId);
-        }
+      } else {
+        // Se data não existe mas não retornou erro PGRST116, envia dados locais
+        await sendDadosToCloud(activeUserId);
       }
     } catch (err: any) {
       console.warn('Aviso ao sincronizar dados da nuvem Supabase:', err);
+      setSyncError(getFriendlySyncErrorMessage(err));
+    } finally {
+      setIsSyncingCloud(false);
+      setTimeout(() => {
+        isSyncingFromCloud.current = false;
+      }, 500);
+    }
+  };
+
+  // Função unificada e inteligente para o botão "Forçar Sincronismo na Nuvem"
+  const handleForcarSincronismoCloud = async () => {
+    if (!isSupabaseConfigured) return;
+
+    const session = await getValidSession();
+    if (!session || !session.user?.id) {
+      setShowAuthModal(true);
+      return;
+    }
+
+    try {
+      setIsSyncingCloud(true);
+      await syncDadosFromCloud(session.user.id);
+    } catch (err: any) {
+      console.warn('Erro ao forçar sincronização com a nuvem:', err);
     } finally {
       setIsSyncingCloud(false);
     }
@@ -982,7 +1055,6 @@ export default function App() {
             .then(({ error }) => {
               if (error) console.error('Erro ao limpar configurações na nuvem:', error);
             });
-          skipSyncCount.current = 1;
           sendDadosToCloud(session.user.id);
         }
       });
@@ -1129,18 +1201,23 @@ export default function App() {
             {isSupabaseConfigured && (
               userSession ? (
                 /* Logado: mostra email + status + botão de logout */
-                <div className="flex items-center gap-2.5 bg-[#1E293B]/60 border border-emerald-500/20 rounded px-3 py-1.5" id="cloud-status-logged">
+                <div className="flex items-center gap-2 bg-[#1E293B]/60 border border-emerald-500/20 rounded px-2.5 py-1.5" id="cloud-status-logged">
                   <div className={`w-1.5 h-1.5 rounded-full shrink-0 animate-pulse ${syncError ? 'bg-rose-400' : 'bg-emerald-400'}`} />
                   <div className="hidden sm:block text-right">
                     <span className={`text-[9px] block font-mono uppercase tracking-wider ${syncError ? 'text-rose-400' : 'text-emerald-400'}`}>{syncError ? 'Sync Erro' : 'Nuvem Ativa'}</span>
-                    <span className="text-[10px] text-[#94A3B8] font-mono truncate max-w-[140px] block">{userSession.user?.email}</span>
+                    <span className="text-[10px] text-[#94A3B8] font-mono truncate max-w-[130px] block">{userSession.user?.email}</span>
                   </div>
-                  {isSyncingCloud && (
-                    <CheckCircle size={12} className="text-emerald-400 animate-spin" />
-                  )}
+                  <button
+                    onClick={handleForcarSincronismoCloud}
+                    disabled={isSyncingCloud}
+                    className="p-1 text-[#C5A059] hover:text-[#C5A059]/80 hover:bg-[#C5A059]/10 rounded transition-all cursor-pointer disabled:opacity-50"
+                    title={isSyncingCloud ? "Sincronizando com a Nuvem..." : "Sincronizar com a Nuvem agora"}
+                  >
+                    <RefreshCw size={12} className={isSyncingCloud ? "animate-spin" : ""} />
+                  </button>
                   <button
                     onClick={handleLogout}
-                    className="text-[9px] text-rose-400 hover:text-rose-300 font-mono ml-1 cursor-pointer"
+                    className="text-[9px] text-rose-400 hover:text-rose-300 font-mono ml-0.5 cursor-pointer p-1 hover:bg-rose-950/20 rounded transition-all"
                     title="Sair da conta"
                   >
                     <LogOut size={12} />
@@ -1394,13 +1471,7 @@ export default function App() {
                 userEmail={userSession?.user?.email}
                 onOpenAuth={() => setShowAuthModal(true)}
                 onLogout={handleLogout}
-                onSyncCloud={async () => {
-                  if (userSession?.user?.id) {
-                    await sendDadosToCloud(userSession.user.id);
-                  } else {
-                    setShowAuthModal(true);
-                  }
-                }}
+                onSyncCloud={handleForcarSincronismoCloud}
                 isSyncingCloud={isSyncingCloud}
                 lastSyncCloudTime={lastSyncCloudTime}
                 onResetDadosEstudo={handleResetarDadosEstudo}
