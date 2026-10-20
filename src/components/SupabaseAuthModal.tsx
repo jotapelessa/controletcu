@@ -125,6 +125,7 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
                 placeholder="seu.email@dominio.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="username"
                 className="w-full bg-[#0C0E12] border border-[#1E293B] rounded p-2.5 pl-9 text-xs text-[#E2E8F0] placeholder-[#334155] focus:outline-none focus:border-[#C5A059] font-sans"
                 required
               />
@@ -140,6 +141,7 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
                 placeholder="Sua senha de acesso"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete={isSignUp ? "new-password" : "current-password"}
                 className="w-full bg-[#0C0E12] border border-[#1E293B] rounded p-2.5 pl-9 text-xs text-[#E2E8F0] placeholder-[#334155] focus:outline-none focus:border-[#C5A059] font-sans"
                 required
               />

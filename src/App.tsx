@@ -162,39 +162,10 @@ export default function App() {
         .from('profiles')
         .select('*')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
       
       if (error) {
-        console.warn('Perfil não encontrado no Supabase ou aviso:', error);
-
-        if (error.code === 'PGRST116') {
-          // Tentar criar perfil manualmente caso a trigger atrase
-          const emailVal = userEmail || '';
-          const { data: newProfile, error: insertError } = await supabase
-            .from('profiles')
-            .insert({ 
-              id: userId, 
-              email: emailVal, 
-              is_super_admin: false, 
-              subscription_status: 'ativo' 
-            })
-            .select()
-            .single();
-
-          if (!insertError && newProfile) {
-            setUserProfile(newProfile);
-            return;
-          }
-        }
-
-        // Em qualquer caso de erro (RLS, timeout, etc.), define perfil padrão ativo para nunca travar a interface do aluno
-        setUserProfile({
-          id: userId,
-          email: userEmail || '',
-          is_super_admin: false,
-          subscription_status: 'ativo'
-        });
-        return;
+        console.warn('Aviso ao buscar perfil no Supabase:', error);
       }
 
       if (profile) {
@@ -206,7 +177,34 @@ export default function App() {
             .update({ last_login: new Date().toISOString() })
             .eq('id', userId)
         ).catch(() => {});
+        return;
       }
+
+      // Perfil não encontrado: tentar criar perfil manualmente caso a trigger de auth atrase
+      const emailVal = userEmail || '';
+      const { data: newProfile, error: insertError } = await supabase
+        .from('profiles')
+        .insert({ 
+          id: userId, 
+          email: emailVal, 
+          is_super_admin: false, 
+          subscription_status: 'ativo' 
+        })
+        .select()
+        .maybeSingle();
+
+      if (!insertError && newProfile) {
+        setUserProfile(newProfile);
+        return;
+      }
+
+      // Em qualquer caso de erro ou restrição de RLS, define perfil padrão ativo local para nunca travar a interface do aluno
+      setUserProfile({
+        id: userId,
+        email: userEmail || '',
+        is_super_admin: false,
+        subscription_status: 'ativo'
+      });
     } catch (err) {
       console.warn('Exceção ao buscar perfil:', err);
       setUserProfile({
@@ -226,9 +224,9 @@ export default function App() {
         .from('cms_settings')
         .select('*')
         .eq('id', 'global')
-        .single()
+        .maybeSingle()
         .then(({ data, error }) => {
-          if (error && error.code !== 'PGRST116') {
+          if (error) {
             console.error('Erro ao carregar CMS do Supabase:', error);
             setCmsContent(DEFAULT_CMS_CONTENT);
           } else if (data && data.content) {
@@ -274,6 +272,7 @@ export default function App() {
           setUserSession(null);
           setUserProfile(null);
           setSyncError(null);
+          setShowAuthModal(false);
           localStorage.removeItem('superestrategico_last_sync_cloud_time');
           localStorage.removeItem('superestrategico_last_sync_time_raw');
           setLastSyncCloudTime('');
@@ -922,6 +921,7 @@ export default function App() {
 
   const handleLogout = async () => {
     if (!isSupabaseConfigured) return;
+    setShowAuthModal(false);
     await supabase.auth.signOut();
     setUserSession(null);
     setUserProfile(null);
@@ -1616,6 +1616,18 @@ export default function App() {
     }
   };
 
+  const handleAuthSuccess = (session?: any) => {
+    setShowAuthModal(false);
+    if (session) {
+      setUserSession(session);
+      setSyncError(null);
+      if (!isSyncingFromCloud.current) {
+        syncDadosFromCloud(session.user.id);
+      }
+      fetchAndSetProfile(session.user.id, session.user.email);
+    }
+  };
+
   const renderSyncErrorToast = () => {
     if (!syncError) return null;
     return (
@@ -1683,7 +1695,7 @@ export default function App() {
         {showAuthModal && (
           <SupabaseAuthModal
             onClose={() => setShowAuthModal(false)}
-            onSuccess={() => setShowAuthModal(false)}
+            onSuccess={handleAuthSuccess}
           />
         )}
         {renderSyncErrorToast()}
@@ -2067,7 +2079,7 @@ export default function App() {
       {showAuthModal && (
         <SupabaseAuthModal
           onClose={() => setShowAuthModal(false)}
-          onSuccess={() => setShowAuthModal(false)}
+          onSuccess={handleAuthSuccess}
         />
       )}
 
