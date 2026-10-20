@@ -56,19 +56,45 @@ export default function App() {
   const [showSyncSuccessToast, setShowSyncSuccessToast] = useState(false);
   const syncSuccessTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  const isAuthOrRlsError = (err: any): boolean => {
+    if (!err) return false;
+    const code = String(err.code || err.status || '');
+    const msg = String(err.message || err.error_description || (typeof err === 'string' ? err : ''));
+    return (
+      code === '42501' ||
+      code === 'PGRST301' ||
+      code === '401' ||
+      code === '403' ||
+      err.status === 401 ||
+      err.status === 403 ||
+      msg.toLowerCase().includes('row-level security') ||
+      msg.toLowerCase().includes('violates row-level security policy') ||
+      msg.toLowerCase().includes('jwt') ||
+      msg.toLowerCase().includes('token') ||
+      msg.toLowerCase().includes('not authenticated') ||
+      msg.toLowerCase().includes('permission denied')
+    );
+  };
+
   const getFriendlySyncErrorMessage = (err: any): { friendly: string; technical: string } => {
-    const errMsg = err?.message || err?.error_description || JSON.stringify(err) || '';
-    const errCode = err?.code || err?.status || '';
-    const technical = `${errCode ? `[${errCode}]: ` : ''}${errMsg}`;
+    const errMsg = err?.message || err?.error_description || (typeof err === 'string' ? err : JSON.stringify(err)) || '';
+    const errCode = String(err?.code || err?.status || '');
     
+    // Suprimir código 42501 e mensagens técnicas intimidantes de RLS/Auth para o usuário
+    if (isAuthOrRlsError(err)) {
+      return {
+        friendly: "Sua sessão expirou ou não está autenticada. Faça login novamente para sincronizar com a nuvem.",
+        technical: "Sessão de usuário expirada ou não autenticada no servidor."
+      };
+    }
+
+    const technical = `${errCode ? `[${errCode}]: ` : ''}${errMsg}`;
     let friendly = "Ocorreu um erro ao sincronizar suas alterações com a nuvem.";
     
     if (errCode === 'PGRST204' || errCode === 'PGRST116') {
       friendly = "Configuração incompleta no banco de dados. Contate o suporte técnico.";
     } else if (errCode === '23502') {
       friendly = "Seu progresso ou ciclo possui campos incompletos. Tente redefinir seus dados de estudos.";
-    } else if (errCode === '42501' || errCode === 'PGRST301') {
-      friendly = "Sua sessão expirou ou não está autenticada. Faça login novamente para sincronizar com a nuvem.";
     } else if (errMsg.toLowerCase().includes('fetch') || errMsg.toLowerCase().includes('network') || errCode === 'TypeError') {
       friendly = "Não foi possível conectar ao servidor. Suas alterações foram salvas localmente.";
     }
@@ -351,10 +377,11 @@ export default function App() {
 
     // 1. Obter e validar estritamente a sessão ativa antes de fazer qualquer chamada
     const session = await getValidSession();
-    if (!session || !session.user?.id) {
+    if (!session || !session.access_token || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
       setUserSession(null);
       setUserProfile(null);
+      setSyncError(null);
       return false;
     }
 
@@ -418,18 +445,11 @@ export default function App() {
         .select('updated_at')
         .single();
 
-      // Se a sessão expirou durante a requisição (erro 42501 RLS), tenta renovar o token via refreshSession e retenta
-      if (
-        error &&
-        (error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          (error as any).status === 401 ||
-          (error as any).status === 403 ||
-          error.message?.includes('row-level security'))
-      ) {
-        console.warn('Erro de RLS detectado no envio, tentando renovar sessão com refreshSession()...');
+      // Se a sessão expirou durante a requisição (erro 42501 RLS, PGRST301, 401, 403), tenta renovar o token via refreshSession e retenta
+      if (isAuthOrRlsError(error)) {
+        console.warn('Erro de RLS/Auth detectado no envio, tentando renovar sessão com refreshSession()...');
         const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
-        if (!refreshErr && refreshed?.session) {
+        if (!refreshErr && refreshed?.session && refreshed.session.access_token && refreshed.session.user?.id) {
           setUserSession(refreshed.session);
           const retry = await supabase
             .from('user_data_sync')
@@ -440,8 +460,22 @@ export default function App() {
           upsertData = retry.data;
         } else {
           console.warn('Token expirado não pôde ser renovado na nuvem.');
+          setUserSession(null);
+          setUserProfile(null);
+          setSyncError(null);
+          setShowAuthModal(true);
           return false;
         }
+      }
+
+      // Se o erro de RLS/Auth persistir mesmo após o retry
+      if (isAuthOrRlsError(error)) {
+        console.warn('Erro de RLS/Auth persistiu após tentativa de renovação.');
+        setUserSession(null);
+        setUserProfile(null);
+        setSyncError(null);
+        setShowAuthModal(true);
+        return false;
       }
 
       if (error) {
@@ -483,6 +517,13 @@ export default function App() {
 
         if (logsError) {
           console.warn('Aviso ao sincronizar historico_logs com a nuvem:', logsError);
+          if (isAuthOrRlsError(logsError)) {
+            setUserSession(null);
+            setUserProfile(null);
+            setSyncError(null);
+            setShowAuthModal(true);
+            return false;
+          }
         } else {
           // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
           unsyncedLogs.forEach(log => {
@@ -518,7 +559,14 @@ export default function App() {
       return true;
     } catch (err: any) {
       console.warn('Aviso ao enviar dados para o Supabase:', err);
-      setSyncError(getFriendlySyncErrorMessage(err));
+      if (isAuthOrRlsError(err)) {
+        setUserSession(null);
+        setUserProfile(null);
+        setSyncError(null);
+        setShowAuthModal(true);
+      } else {
+        setSyncError(getFriendlySyncErrorMessage(err));
+      }
       return false;
     } finally {
       setIsSyncingCloud(false);
@@ -537,7 +585,7 @@ export default function App() {
 
       // 1. Garantir que uma sessão autenticada válida existe antes de consultar
       const session = await getValidSession();
-      if (!session || !session.user?.id) {
+      if (!session || !session.access_token || !session.user?.id) {
         console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
         return;
       }
@@ -551,26 +599,22 @@ export default function App() {
         .eq('user_id', activeUserId)
         .single();
 
-      // Se houver erro de autenticação ou RLS, apenas aborta sem deslogar
-      if (
-        error &&
-        (error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          (error as any).status === 401 ||
-          (error as any).status === 403 ||
-          error.message?.includes('row-level security') ||
-          error.message?.includes('JWT') ||
-          error.message?.includes('token'))
-      ) {
+      // Se houver erro de autenticação ou RLS, apenas aborta sem disparar toast técnico
+      if (isAuthOrRlsError(error)) {
         console.warn('syncDadosFromCloud: erro de RLS/autenticação ao carregar dados:', error);
         return;
       }
 
       // PGRST116: Registro não encontrado na nuvem
-      // Se ainda não há registro no Supabase, envia os dados locais imediatamente para semear a nuvem
+      // Se ainda não há registro no Supabase, confirma sessão antes de semear a nuvem
       if (error && error.code === 'PGRST116') {
         console.info('Usuário sem registro no Supabase (PGRST116). Semeando dados iniciais para a nuvem...');
-        await sendDadosToCloud(activeUserId);
+        const validSession = await getValidSession();
+        if (validSession && validSession.access_token && validSession.user?.id) {
+          await sendDadosToCloud(activeUserId);
+        } else {
+          console.warn('syncDadosFromCloud: semeamento cancelado por ausência de sessão válida.');
+        }
         return;
       }
 
@@ -732,6 +776,9 @@ export default function App() {
       }
     } catch (err: any) {
       console.warn('Aviso ao sincronizar dados da nuvem Supabase:', err);
+      if (isAuthOrRlsError(err)) {
+        return;
+      }
       setSyncError(getFriendlySyncErrorMessage(err));
     } finally {
       setIsSyncingCloud(false);
@@ -746,7 +793,10 @@ export default function App() {
     if (!isSupabaseConfigured) return;
 
     const session = await getValidSession();
-    if (!session || !session.user?.id) {
+    if (!session || !session.access_token || !session.user?.id) {
+      setUserSession(null);
+      setUserProfile(null);
+      setSyncError(null);
       setShowAuthModal(true);
       return;
     }
@@ -1113,7 +1163,7 @@ export default function App() {
     // Se logado com sessão válida, atualiza configurações na nuvem com objeto vazio
     if (isSupabaseConfigured) {
       getValidSession().then((session) => {
-        if (session?.user?.id) {
+        if (session?.access_token && session?.user?.id) {
           supabase
             .from('user_data_sync')
             .update({ configuracoes: {} })
