@@ -59,7 +59,10 @@ export default function App() {
   const isAuthOrRlsError = (err: any): boolean => {
     if (!err) return false;
     const code = String(err.code || err.status || '');
-    const msg = String(err.message || err.error_description || (typeof err === 'string' ? err : ''));
+    const name = String(err.name || '');
+    const errType = String(err.error || '');
+    const msg = String(err.message || err.error_description || err.details || (typeof err === 'string' ? err : ''));
+    const fullStr = typeof err === 'string' ? err : JSON.stringify(err);
     return (
       code === '42501' ||
       code === 'PGRST301' ||
@@ -67,35 +70,47 @@ export default function App() {
       code === '403' ||
       err.status === 401 ||
       err.status === 403 ||
+      errType === 'invalid_grant' ||
+      name.includes('Auth') ||
+      msg.includes('42501') ||
+      msg.toUpperCase().includes('PGRST301') ||
       msg.toLowerCase().includes('row-level security') ||
       msg.toLowerCase().includes('violates row-level security policy') ||
       msg.toLowerCase().includes('jwt') ||
       msg.toLowerCase().includes('token') ||
       msg.toLowerCase().includes('not authenticated') ||
-      msg.toLowerCase().includes('permission denied')
+      msg.toLowerCase().includes('permission denied') ||
+      msg.toLowerCase().includes('invalid refresh token') ||
+      fullStr.includes('42501') ||
+      fullStr.toUpperCase().includes('PGRST301')
     );
   };
 
   const getFriendlySyncErrorMessage = (err: any): { friendly: string; technical: string } => {
-    const errMsg = err?.message || err?.error_description || (typeof err === 'string' ? err : JSON.stringify(err)) || '';
+    const rawMsg = err?.message || err?.error_description || (typeof err === 'string' ? err : JSON.stringify(err)) || '';
     const errCode = String(err?.code || err?.status || '');
     
     // Suprimir código 42501 e mensagens técnicas intimidantes de RLS/Auth para o usuário
-    if (isAuthOrRlsError(err)) {
+    if (isAuthOrRlsError(err) || rawMsg.includes('42501') || rawMsg.toLowerCase().includes('row-level security')) {
       return {
         friendly: "Sua sessão expirou ou não está autenticada. Faça login novamente para sincronizar com a nuvem.",
         technical: "Sessão de usuário expirada ou não autenticada no servidor."
       };
     }
 
-    const technical = `${errCode ? `[${errCode}]: ` : ''}${errMsg}`;
+    // Sanitização defensiva contra vazamento acidental de RLS ou 42501
+    const sanitizedErrMsg = rawMsg
+      .replace(/new row violates row-level security policy[^\n]*/gi, 'Acesso não autorizado na nuvem')
+      .replace(/\[?42501\]?:?\s*/g, '');
+
+    const technical = `${errCode && errCode !== '42501' ? `[${errCode}]: ` : ''}${sanitizedErrMsg}`;
     let friendly = "Ocorreu um erro ao sincronizar suas alterações com a nuvem.";
     
     if (errCode === 'PGRST204' || errCode === 'PGRST116') {
       friendly = "Configuração incompleta no banco de dados. Contate o suporte técnico.";
     } else if (errCode === '23502') {
       friendly = "Seu progresso ou ciclo possui campos incompletos. Tente redefinir seus dados de estudos.";
-    } else if (errMsg.toLowerCase().includes('fetch') || errMsg.toLowerCase().includes('network') || errCode === 'TypeError') {
+    } else if (rawMsg.toLowerCase().includes('fetch') || rawMsg.toLowerCase().includes('network') || errCode === 'TypeError') {
       friendly = "Não foi possível conectar ao servidor. Suas alterações foram salvas localmente.";
     }
     
@@ -379,13 +394,17 @@ export default function App() {
     const session = await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      setUserSession(null);
-      setUserProfile(null);
-      setSyncError(null);
+      if (userSession || userId) {
+        setUserSession(null);
+        setUserProfile(null);
+        setSyncError(null);
+        supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+        setShowAuthModal(true);
+      }
       return false;
     }
 
-    const activeUserId = session.user.id;
+    let activeUserId = session.user.id;
 
     try {
       setIsSyncingCloud(true);
@@ -451,9 +470,10 @@ export default function App() {
         const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
         if (!refreshErr && refreshed?.session && refreshed.session.access_token && refreshed.session.user?.id) {
           setUserSession(refreshed.session);
+          activeUserId = refreshed.session.user.id;
           const retry = await supabase
             .from('user_data_sync')
-            .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' })
+            .upsert({ ...payload, user_id: activeUserId }, { onConflict: 'user_id' })
             .select('updated_at')
             .single();
           error = retry.error;
@@ -463,6 +483,7 @@ export default function App() {
           setUserSession(null);
           setUserProfile(null);
           setSyncError(null);
+          supabase.auth.signOut({ scope: 'local' }).catch(() => {});
           setShowAuthModal(true);
           return false;
         }
@@ -474,6 +495,7 @@ export default function App() {
         setUserSession(null);
         setUserProfile(null);
         setSyncError(null);
+        supabase.auth.signOut({ scope: 'local' }).catch(() => {});
         setShowAuthModal(true);
         return false;
       }
@@ -501,19 +523,32 @@ export default function App() {
             user_id: activeUserId,
             materia_id: p.materiaId,
             aula_id: p.aulaId || null,
-            duracao_minutos: p.duracaoMinutos,
-            questoes_resolvidas: p.questoesResolvidas,
-            questoes_acertadas: p.questoesAcertadas,
-            questoes_erradas: p.questoesErradas,
+            duracao_minutos: p.duracaoMinutos ?? 0,
+            questoes_resolvidas: p.questoesResolvidas ?? 0,
+            questoes_acertadas: p.questoesAcertadas ?? 0,
+            questoes_erradas: p.questoesErradas ?? 0,
             tipo: p.tipo,
             comentarios: p.comentarios || null,
             data: p.data
           };
         });
 
-        const { error: logsError } = await supabase
+        let { error: logsError } = await supabase
           .from('historico_logs')
           .upsert(logsPayload, { onConflict: 'id' });
+
+        if (logsError && isAuthOrRlsError(logsError)) {
+          console.warn('Erro de RLS/Auth ao sincronizar historico_logs, tentando renovar sessão...');
+          const { data: refreshedLogs, error: refreshLogsErr } = await supabase.auth.refreshSession();
+          if (!refreshLogsErr && refreshedLogs?.session?.access_token && refreshedLogs?.session?.user?.id) {
+            setUserSession(refreshedLogs.session);
+            activeUserId = refreshedLogs.session.user.id;
+            const retryLogs = await supabase
+              .from('historico_logs')
+              .upsert(logsPayload.map(lp => ({ ...lp, user_id: activeUserId })), { onConflict: 'id' });
+            logsError = retryLogs.error;
+          }
+        }
 
         if (logsError) {
           console.warn('Aviso ao sincronizar historico_logs com a nuvem:', logsError);
@@ -521,6 +556,7 @@ export default function App() {
             setUserSession(null);
             setUserProfile(null);
             setSyncError(null);
+            supabase.auth.signOut({ scope: 'local' }).catch(() => {});
             setShowAuthModal(true);
             return false;
           }
@@ -563,6 +599,7 @@ export default function App() {
         setUserSession(null);
         setUserProfile(null);
         setSyncError(null);
+        supabase.auth.signOut({ scope: 'local' }).catch(() => {});
         setShowAuthModal(true);
       } else {
         setSyncError(getFriendlySyncErrorMessage(err));
@@ -590,18 +627,44 @@ export default function App() {
         return;
       }
 
-      const activeUserId = session.user.id;
+      let activeUserId = session.user.id;
       
       // Buscar dados de configurações do usuário
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('user_data_sync')
         .select('*')
         .eq('user_id', activeUserId)
         .single();
 
-      // Se houver erro de autenticação ou RLS, apenas aborta sem disparar toast técnico
+      // Se houver erro de autenticação ou RLS, tenta renovar sessão uma vez
       if (isAuthOrRlsError(error)) {
-        console.warn('syncDadosFromCloud: erro de RLS/autenticação ao carregar dados:', error);
+        console.warn('syncDadosFromCloud: erro de RLS/autenticação ao carregar dados, tentando renovar sessão...');
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr && refreshed?.session && refreshed.session.access_token && refreshed.session.user?.id) {
+          setUserSession(refreshed.session);
+          activeUserId = refreshed.session.user.id;
+          const retry = await supabase
+            .from('user_data_sync')
+            .select('*')
+            .eq('user_id', activeUserId)
+            .single();
+          data = retry.data;
+          error = retry.error;
+        } else {
+          console.warn('syncDadosFromCloud: sessão expirada não pôde ser renovada.');
+          setUserSession(null);
+          setUserProfile(null);
+          setSyncError(null);
+          return;
+        }
+      }
+
+      // Se ainda for erro de RLS ou autenticação após retry, aborta silenciosamente sem disparar toast de erro
+      if (isAuthOrRlsError(error)) {
+        console.warn('syncDadosFromCloud: erro de RLS/autenticação persistiu ao carregar dados:', error);
+        setUserSession(null);
+        setUserProfile(null);
+        setSyncError(null);
         return;
       }
 
@@ -631,18 +694,21 @@ export default function App() {
 
       if (logsError) {
         console.warn('syncDadosFromCloud: aviso ao buscar historico_logs:', logsError);
+        if (isAuthOrRlsError(logsError)) {
+          return;
+        }
       }
 
-      // Mapear logs do banco para formato local
+      // Mapear logs do banco para formato local com mapeamento correto de colunas snake_case
       let mappedLogs: LogSessao[] = (dbLogs || []).map(p => ({
         id: p.id,
         data: p.data,
         materiaId: p.materia_id,
         aulaId: p.aula_id || '',
-        duracaoMinutos: p.duracao_minutos,
-        questoesResolvidas: p.questoes_resolvidas,
-        questoesAcertadas: p.questoesAcertadas,
-        questoesErradas: p.questoesErradas,
+        duracaoMinutos: p.duracao_minutos ?? p.duracaoMinutos ?? 0,
+        questoesResolvidas: p.questoes_resolvidas ?? p.questoesResolvidas ?? 0,
+        questoesAcertadas: p.questoes_acertadas ?? p.questoesAcertadas ?? 0,
+        questoesErradas: p.questoes_erradas ?? p.questoesErradas ?? 0,
         tipo: p.tipo as any,
         comentarios: p.comentarios || undefined
       }));
@@ -1056,7 +1122,7 @@ export default function App() {
       // Se logado com sessão válida, envia dados limpos para a nuvem antes do reload
       if (isSupabaseConfigured) {
         const session = await getValidSession();
-        if (session?.user?.id) {
+        if (session?.access_token && session?.user?.id) {
           try {
             await supabase
               .from('user_data_sync')
@@ -1113,7 +1179,7 @@ export default function App() {
     // para sobrescrever o histórico antigo e evitar que o sync restaure os dados deletados
     if (isSupabaseConfigured) {
       const session = await getValidSession();
-      if (session?.user?.id) {
+      if (session?.access_token && session?.user?.id) {
         try {
           await supabase
             .from('user_data_sync')
@@ -1640,16 +1706,18 @@ export default function App() {
               <span>{syncError.friendly}</span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setSyncError(null);
-                  setShowAuthModal(true);
-                }}
-                className="text-[10px] bg-[#C5A059] text-black font-bold px-2 py-1 rounded hover:bg-[#C5A059]/90 cursor-pointer uppercase transition-all"
-              >
-                Fazer Login
-              </button>
+              {(!userSession || syncError.friendly.toLowerCase().includes('login') || syncError.friendly.toLowerCase().includes('sessão')) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSyncError(null);
+                    setShowAuthModal(true);
+                  }}
+                  className="text-[10px] bg-[#C5A059] text-black font-bold px-2 py-1 rounded hover:bg-[#C5A059]/90 cursor-pointer uppercase transition-all"
+                >
+                  Fazer Login
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
