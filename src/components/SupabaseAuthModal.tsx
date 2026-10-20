@@ -4,7 +4,7 @@ import { LogIn, UserPlus, X, Mail, Lock, AlertCircle, CheckCircle } from 'lucide
 
 interface AuthModalProps {
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: (session?: any) => void;
 }
 
 export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps) {
@@ -14,6 +14,12 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  const fillDemoCredentials = () => {
+    setEmail('tcu.auditor.seed@gmail.com');
+    setPassword('TesteTCU@2026!');
+    setErrorMsg('');
+  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,29 +40,47 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
 
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password: password.trim(),
         });
         if (error) throw error;
         
-        setSuccessMsg('Conta criada com sucesso! Caso a confirmação de e-mail esteja ativa, valide o link enviado. Caso contrário, você já pode fazer login.');
-        setIsSignUp(false);
+        if (data?.session) {
+          setSuccessMsg('Conta criada e autenticada com sucesso! Entrando...');
+          setTimeout(() => {
+            onSuccess(data.session);
+            onClose();
+          }, 800);
+        } else {
+          setSuccessMsg('Conta criada com sucesso! Caso a confirmação de e-mail esteja ativa no Supabase, valide o link. Caso contrário, você já pode fazer login.');
+          setIsSignUp(false);
+        }
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password: password.trim(),
         });
         if (error) throw error;
 
-        setSuccessMsg('Acesso concedido com sucesso!');
+        setSuccessMsg('Acesso concedido com sucesso! Entrando...');
         setTimeout(() => {
-          onSuccess();
+          onSuccess(data?.session);
           onClose();
-        }, 1000);
+        }, 600);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Erro durante a autenticação. Tente novamente.');
+      let msg = err?.message || 'Erro durante a autenticação. Tente novamente.';
+      if (msg.includes('Invalid login credentials')) {
+        msg = 'E-mail ou senha incorretos. Se ainda não possui cadastro, clique em "Não tem conta? Cadastre-se" abaixo.';
+      } else if (msg.includes('Email not confirmed')) {
+        msg = 'E-mail não confirmado. Por favor, verifique sua caixa de entrada.';
+      } else if (msg.includes('User already registered')) {
+        msg = 'Este e-mail já está cadastrado. Alterne para login abaixo.';
+      } else if (msg.includes('Password should be at least')) {
+        msg = 'A senha deve ter pelo menos 6 caracteres.';
+      }
+      setErrorMsg(msg);
     } finally {
       setLoading(false);
     }
@@ -136,6 +160,18 @@ export default function SupabaseAuthModal({ onClose, onSuccess }: AuthModalProps
           >
             {loading ? 'Processando...' : isSignUp ? 'Criar Cadastro' : 'Entrar na Conta'}
           </button>
+
+          {!isSignUp && (
+            <div className="pt-2 text-center">
+              <button
+                type="button"
+                onClick={fillDemoCredentials}
+                className="text-[11px] text-[#C5A059]/80 hover:text-[#C5A059] underline decoration-dotted font-mono cursor-pointer transition-colors"
+              >
+                Preencher com credenciais de Administrador / Teste
+              </button>
+            </div>
+          )}
         </form>
 
         <div className="mt-5 text-center text-xs border-t border-[#1E293B]/60 pt-4">

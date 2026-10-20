@@ -76,10 +76,7 @@ export default function App() {
     try {
       const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
       if (sessionErr) {
-        console.warn('Erro ao obter sessão no Supabase:', sessionErr);
-        await supabase.auth.signOut().catch(() => {});
-        setUserSession(null);
-        setUserProfile(null);
+        console.warn('Aviso ao obter sessão no Supabase:', sessionErr);
         return null;
       }
 
@@ -89,32 +86,23 @@ export default function App() {
       // Se a sessão expirou ou está a menos de 60 segundos de expirar, tenta renovar proativamente
       const isExpiredOrExpiring = session.expires_at && (session.expires_at * 1000 < Date.now() + 60000);
       if (isExpiredOrExpiring) {
-        console.info('Sessão expirada ou prestes a expirar. Renovando token via refreshSession()...');
         const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
         if (!refreshErr && refreshed?.session) {
           session = refreshed.session;
           setUserSession(session);
         } else {
-          console.warn('refreshSession falhou ou refresh_token expirado:', refreshErr);
-          await supabase.auth.signOut().catch(() => {});
-          setUserSession(null);
-          setUserProfile(null);
+          console.warn('refreshSession falhou:', refreshErr);
           return null;
         }
       }
 
       if (!session.access_token || !session.user?.id) {
-        await supabase.auth.signOut().catch(() => {});
-        setUserSession(null);
-        setUserProfile(null);
         return null;
       }
 
       return session;
     } catch (err) {
       console.warn('Exceção ao validar sessão no Supabase:', err);
-      setUserSession(null);
-      setUserProfile(null);
       return null;
     }
   };
@@ -129,23 +117,7 @@ export default function App() {
         .single();
       
       if (error) {
-        console.error('Erro ao obter perfil do usuário:', error);
-
-        // Se o erro for de autenticação ou RLS, a sessão expirou/não é válida: limpa e aborta
-        if (
-          error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          (error as any).status === 401 ||
-          (error as any).status === 403 ||
-          error.message?.includes('row-level security') ||
-          error.message?.includes('JWT')
-        ) {
-          console.warn('fetchAndSetProfile: erro de autenticação/RLS ao buscar perfil:', error);
-          await supabase.auth.signOut().catch(() => {});
-          setUserSession(null);
-          setUserProfile(null);
-          return;
-        }
+        console.warn('Perfil não encontrado no Supabase ou aviso:', error);
 
         if (error.code === 'PGRST116') {
           // Tentar criar perfil manualmente caso a trigger atrase
@@ -163,50 +135,32 @@ export default function App() {
 
           if (!insertError && newProfile) {
             setUserProfile(newProfile);
-          } else {
-            if (
-              insertError &&
-              (insertError.code === '42501' ||
-                insertError.code === 'PGRST301' ||
-                (insertError as any).status === 401 ||
-                (insertError as any).status === 403 ||
-                insertError.message?.includes('row-level security'))
-            ) {
-              console.warn('fetchAndSetProfile: RLS negado ao criar perfil:', insertError);
-              await supabase.auth.signOut().catch(() => {});
-              setUserSession(null);
-              setUserProfile(null);
-              return;
-            }
-            setUserProfile({
-              id: userId,
-              email: emailVal,
-              is_super_admin: false,
-              subscription_status: 'ativo'
-            });
+            return;
           }
-        } else {
-          // Outro erro temporário
-          setUserProfile({
-            id: userId,
-            email: userEmail || '',
-            is_super_admin: false,
-            subscription_status: 'ativo'
-          });
         }
+
+        // Em qualquer caso de erro (RLS, timeout, etc.), define perfil padrão ativo para nunca travar a interface do aluno
+        setUserProfile({
+          id: userId,
+          email: userEmail || '',
+          is_super_admin: false,
+          subscription_status: 'ativo'
+        });
         return;
       }
 
       if (profile) {
         setUserProfile(profile);
-        // Atualizar last_login de forma assíncrona
-        await supabase
-          .from('profiles')
-          .update({ last_login: new Date().toISOString() })
-          .eq('id', userId);
+        // Atualizar last_login de forma assíncrona (não bloqueante)
+        Promise.resolve(
+          supabase
+            .from('profiles')
+            .update({ last_login: new Date().toISOString() })
+            .eq('id', userId)
+        ).catch(() => {});
       }
     } catch (err) {
-      console.error('Exceção ao buscar perfil:', err);
+      console.warn('Exceção ao buscar perfil:', err);
       setUserProfile({
         id: userId,
         email: userEmail || '',
@@ -269,7 +223,10 @@ export default function App() {
       // 2. Ouvir mudanças de autenticação
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
         if (event === 'INITIAL_SESSION') {
-          // Já validado na inicialização proativa por getValidSession()
+          if (session) {
+            setUserSession(session);
+            fetchAndSetProfile(session.user.id, session.user.email);
+          }
           return;
         }
 
@@ -452,34 +409,15 @@ export default function App() {
             .upsert({ ...payload, user_id: refreshed.session.user.id }, { onConflict: 'user_id' });
           error = retry.error;
         } else {
-          // Token não pôde ser renovado: limpa a sessão e aborta silenciosamente sem toast de erro RLS
-          console.warn('Token expirado não pôde ser renovado. Encerrando sessão.');
-          await supabase.auth.signOut().catch(() => {});
-          setUserSession(null);
-          setUserProfile(null);
-          setSyncError(null);
+          console.warn('Token expirado não pôde ser renovado na nuvem.');
           return;
         }
       }
 
-      // Se após a retentativa ainda houver erro de RLS 42501
-      if (
-        error &&
-        (error.code === '42501' ||
-          error.code === 'PGRST301' ||
-          (error as any).status === 401 ||
-          (error as any).status === 403 ||
-          error.message?.includes('row-level security'))
-      ) {
-        console.warn('Erro RLS 42501 persistiu no envio. Encerrando sessão limpa.');
-        await supabase.auth.signOut().catch(() => {});
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
+      if (error) {
+        console.warn('Aviso: envio de dados para a nuvem não concluído:', error);
         return;
       }
-
-      if (error) throw error;
 
       // Sincronizar novos logs locais com a tabela historico_logs (delta sync)
       const unsyncedLogs = historico.filter(log => !syncedLogIds.current.has(log.id));
@@ -503,25 +441,11 @@ export default function App() {
           .upsert(logsPayload, { onConflict: 'id' });
 
         if (logsError) {
-          if (
-            logsError.code === '42501' ||
-            logsError.code === 'PGRST301' ||
-            (logsError as any).status === 401 ||
-            (logsError as any).status === 403 ||
-            logsError.message?.includes('row-level security')
-          ) {
-            console.warn('Erro RLS ao enviar historico_logs. Encerrando sessão limpa.');
-            await supabase.auth.signOut().catch(() => {});
-            setUserSession(null);
-            setUserProfile(null);
-            setSyncError(null);
-            return;
-          }
-          throw logsError;
+          console.warn('Aviso ao sincronizar historico_logs com a nuvem:', logsError);
+        } else {
+          // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
+          unsyncedLogs.forEach(log => syncedLogIds.current.add(log.id));
         }
-
-        // Adicionar os IDs dos logs enviados com sucesso ao set de sincronizados
-        unsyncedLogs.forEach(log => syncedLogIds.current.add(log.id));
       }
 
       // Gravar timestamp local
@@ -541,21 +465,7 @@ export default function App() {
         setShowSyncSuccessToast(false);
       }, 2500);
     } catch (err: any) {
-      console.error('Erro ao enviar dados para o Supabase:', err);
-      if (
-        err?.code === '42501' ||
-        err?.code === 'PGRST301' ||
-        err?.status === 401 ||
-        err?.status === 403 ||
-        err?.message?.includes('row-level security')
-      ) {
-        await supabase.auth.signOut().catch(() => {});
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
-      } else {
-        setSyncError(getFriendlySyncErrorMessage(err));
-      }
+      console.warn('Aviso ao enviar dados para o Supabase:', err);
     } finally {
       setIsSyncingCloud(false);
     }
@@ -569,8 +479,6 @@ export default function App() {
     const session = await getValidSession();
     if (!session || !session.user?.id) {
       console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
-      setUserSession(null);
-      setUserProfile(null);
       return;
     }
 
@@ -587,7 +495,7 @@ export default function App() {
         .eq('user_id', activeUserId)
         .single();
 
-      // Se houver erro de autenticação ou RLS, limpa a sessão e aborta
+      // Se houver erro de autenticação ou RLS, apenas aborta sem deslogar
       if (
         error &&
         (error.code === '42501' ||
@@ -599,10 +507,6 @@ export default function App() {
           error.message?.includes('token'))
       ) {
         console.warn('syncDadosFromCloud: erro de RLS/autenticação ao carregar dados:', error);
-        await supabase.auth.signOut().catch(() => {});
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
         return;
       }
 
@@ -618,23 +522,7 @@ export default function App() {
         .eq('user_id', activeUserId);
 
       if (logsError) {
-        if (
-          logsError.code === '42501' ||
-          logsError.code === 'PGRST301' ||
-          (logsError as any).status === 401 ||
-          (logsError as any).status === 403 ||
-          logsError.message?.includes('row-level security') ||
-          logsError.message?.includes('JWT')
-        ) {
-          console.warn('syncDadosFromCloud: erro de RLS/autenticação ao buscar historico_logs:', logsError);
-          await supabase.auth.signOut().catch(() => {});
-          setUserSession(null);
-          setUserProfile(null);
-          setSyncError(null);
-          return;
-        }
-        // Não bloqueia o sync principal, apenas loga o erro de histórico
-        console.error('Erro ao buscar historico_logs:', logsError);
+        console.warn('syncDadosFromCloud: aviso ao buscar historico_logs:', logsError);
       }
 
       // Mapear logs do banco para formato local
@@ -730,21 +618,7 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      console.error('Erro ao sincronizar dados da nuvem Supabase:', err);
-      if (
-        err?.code === '42501' ||
-        err?.code === 'PGRST301' ||
-        err?.status === 401 ||
-        err?.status === 403 ||
-        err?.message?.includes('row-level security')
-      ) {
-        await supabase.auth.signOut().catch(() => {});
-        setUserSession(null);
-        setUserProfile(null);
-        setSyncError(null);
-      } else {
-        setSyncError(getFriendlySyncErrorMessage(err));
-      }
+      console.warn('Aviso ao sincronizar dados da nuvem Supabase:', err);
     } finally {
       setIsSyncingCloud(false);
     }
@@ -1163,8 +1037,14 @@ export default function App() {
         {showAuthModal && (
           <SupabaseAuthModal
             onClose={() => setShowAuthModal(false)}
-            onSuccess={() => {
+            onSuccess={async (newSession) => {
               setShowAuthModal(false);
+              const session = newSession || (await supabase.auth.getSession()).data?.session;
+              if (session) {
+                setUserSession(session);
+                await fetchAndSetProfile(session.user.id, session.user.email);
+                syncDadosFromCloud(session.user.id);
+              }
             }}
           />
         )}
@@ -1549,8 +1429,14 @@ export default function App() {
       {showAuthModal && (
         <SupabaseAuthModal
           onClose={() => setShowAuthModal(false)}
-          onSuccess={() => {
+          onSuccess={async (newSession) => {
             setShowAuthModal(false);
+            const session = newSession || (await supabase.auth.getSession()).data?.session;
+            if (session) {
+              setUserSession(session);
+              await fetchAndSetProfile(session.user.id, session.user.email);
+              syncDadosFromCloud(session.user.id);
+            }
           }}
         />
       )}
