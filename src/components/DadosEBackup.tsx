@@ -360,6 +360,12 @@ export default function DadosEBackup({
     const configuracoes = {
       timer_segundos: parseInt(localStorage.getItem('superestrategico_timer_segundos') || '0', 10),
       timer_modo_regressivo: localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true',
+      timer_rodando: localStorage.getItem('superestrategico_timer_rodando') === 'true',
+      timer_timestamp_inicio: parseInt(localStorage.getItem('superestrategico_timer_timestamp_inicio') || '0', 10) || null,
+      timer_timestamp_ultimo_tick: parseInt(localStorage.getItem('superestrategico_timer_timestamp_ultimo_tick') || '0', 10) || null,
+      timer_gabarito_multi_aulas: getLocalStorageItemJson('superestrategico_timer_gabarito_multi_aulas') || {},
+      timer_aulas_foco_ids: getLocalStorageItemJson('superestrategico_timer_aulas_foco_ids') || [],
+      timer_aula_selecionada_id: localStorage.getItem('superestrategico_timer_aula_selecionada_id') || '',
       timer_hora_inicio: localStorage.getItem('superestrategico_timer_hora_inicio'),
       timer_hora_fim: localStorage.getItem('superestrategico_timer_hora_fim'),
       timer_correct_list: getLocalStorageItemJson('superestrategico_timer_correct_list') || [],

@@ -41,12 +41,51 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   const currentSlot = ciclo.itens[ciclo.itemAtualIndice] || ciclo.itens[0];
   const materiaAtiva = materias.find(m => m.id === currentSlot?.materiaId) || materias[0];
 
-  // State para o Cronômetro
+  // State para o Cronômetro e Persistência Temporal Monotônica
   const [segundos, setSegundos] = useState<number>(() => {
     const saved = localStorage.getItem('superestrategico_timer_segundos');
-    return saved ? parseInt(saved, 10) : 0;
+    const wasRunning = localStorage.getItem('superestrategico_timer_rodando') === 'true';
+    const lastTick = localStorage.getItem('superestrategico_timer_timestamp_ultimo_tick');
+    const modoReg = localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true';
+    let baseSec = saved ? parseInt(saved, 10) : 0;
+    if (isNaN(baseSec)) baseSec = 0;
+
+    // Se a página foi recarregada enquanto o cronômetro estava rodando, computa a diferença de tempo real
+    if (wasRunning && lastTick) {
+      const lastTickNum = parseInt(lastTick, 10);
+      if (!isNaN(lastTickNum) && lastTickNum > 0) {
+        const deltaSegundos = Math.max(0, Math.floor((Date.now() - lastTickNum) / 1000));
+        if (modoReg) {
+          baseSec = Math.max(0, baseSec - deltaSegundos);
+        } else {
+          baseSec = baseSec + deltaSegundos;
+        }
+      }
+    }
+    return baseSec;
   });
-  const [rodando, setRodando] = useState(false);
+
+  const [rodando, setRodando] = useState<boolean>(() => {
+    return localStorage.getItem('superestrategico_timer_rodando') === 'true';
+  });
+
+  const [timestampInicio, setTimestampInicio] = useState<number | null>(() => {
+    const saved = localStorage.getItem('superestrategico_timer_timestamp_inicio');
+    return saved ? parseInt(saved, 10) : null;
+  });
+
+  const [timestampRetorno, setTimestampRetorno] = useState<number | null>(() => {
+    const wasRunning = localStorage.getItem('superestrategico_timer_rodando') === 'true';
+    const lastTick = localStorage.getItem('superestrategico_timer_timestamp_ultimo_tick');
+    if (wasRunning && lastTick) {
+      const lastTickNum = parseInt(lastTick, 10);
+      if (!isNaN(lastTickNum) && (Date.now() - lastTickNum) > 1500) {
+        return Date.now();
+      }
+    }
+    return null;
+  });
+
   const [modoRegressivo, setModoRegressivo] = useState<boolean>(() => {
     return localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true';
   });
@@ -103,19 +142,36 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     ? Math.round(rawTargetMinutos)
     : 90;
 
-  // Atualizar tempoMinutosCustom e segundos do temporizador se não estiver rodando quando a meta mudar
+  // Atualizar tempoMinutosCustom e segundos do temporizador se não houver sessão ativa nem tempo em andamento
   useEffect(() => {
     setTempoMinutosCustom(targetMinutos);
-    if (!rodando && modoRegressivo) {
+    const savedSecStr = localStorage.getItem('superestrategico_timer_segundos');
+    const savedRodando = localStorage.getItem('superestrategico_timer_rodando') === 'true';
+    const hasActiveSession = savedRodando || (savedSecStr !== null && parseInt(savedSecStr, 10) > 0 && parseInt(savedSecStr, 10) !== targetMinutos * 60);
+
+    if (!rodando && !hasActiveSession && modoRegressivo && segundos === 0) {
       setSegundos(targetMinutos * 60);
       localStorage.setItem('superestrategico_timer_segundos', (targetMinutos * 60).toString());
     }
   }, [targetMinutos, rodando, modoRegressivo]);
   
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceSyncRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Seleção de Aula Relacionada
-  const [aulaSelecionadaId, setAulaSelecionadaId] = useState('');
+  // Função auxiliar para disparar evento debounced de sincronização contínua com a nuvem
+  const triggerDebouncedSync = () => {
+    if (debounceSyncRef.current) {
+      clearTimeout(debounceSyncRef.current);
+    }
+    debounceSyncRef.current = setTimeout(() => {
+      window.dispatchEvent(new Event('superestrategico_config_updated'));
+    }, 1000);
+  };
+
+  // Seleção de Aula Relacionada restaurada com prioridade de localStorage
+  const [aulaSelecionadaId, setAulaSelecionadaId] = useState<string>(() => {
+    return localStorage.getItem('superestrategico_timer_aula_selecionada_id') || '';
+  });
 
   // Form de Log de Estudos Multi-Aulas
   interface SessaoAulaFormItem {
@@ -267,21 +323,33 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   // Inicializar seleção de aula padrão quando mudar de matéria ativa
   useEffect(() => {
     if (materiaAtiva?.aulas && materiaAtiva.aulas.length > 0) {
+      const savedAulaId = localStorage.getItem('superestrategico_timer_aula_selecionada_id');
       const naoConcluida = materiaAtiva.aulas.find(a => a.status !== StatusAula.Concluido);
-      const defaultId = naoConcluida ? naoConcluida.id : materiaAtiva.aulas[0].id;
+      const fallbackId = naoConcluida ? naoConcluida.id : materiaAtiva.aulas[0].id;
+      const initialId = (savedAulaId && materiaAtiva.aulas.some(a => a.id === savedAulaId))
+        ? savedAulaId
+        : fallbackId;
+
       setAulaSelecionadaId(prev => {
         // Se já existe e pertence à matéria atual, manter
         if (prev && materiaAtiva.aulas.some(a => a.id === prev)) return prev;
-        return defaultId;
+        return initialId;
       });
       setAulasFocoIds(prev => {
         // Filtrar IDs que pertençam à matéria ativa atual
         const pertencem = prev.filter(id => materiaAtiva.aulas.some(a => a.id === id));
         if (pertencem.length > 0) return pertencem;
-        return [defaultId];
+        return [initialId];
       });
     }
   }, [materiaAtiva]);
+
+  // Persistir aulaSelecionadaId no localStorage
+  useEffect(() => {
+    if (aulaSelecionadaId) {
+      localStorage.setItem('superestrategico_timer_aula_selecionada_id', aulaSelecionadaId);
+    }
+  }, [aulaSelecionadaId]);
 
   // Persistir gabaritoAulas e aulasFocoIds no localStorage
   useEffect(() => {
@@ -292,10 +360,14 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     localStorage.setItem('superestrategico_timer_aulas_foco_ids', JSON.stringify(aulasFocoIds));
   }, [aulasFocoIds]);
 
-  // Efeito do Cronômetro
+  // Efeito do Cronômetro com Persistência Temporal Monotônica
   useEffect(() => {
     if (rodando) {
+      localStorage.setItem('superestrategico_timer_rodando', 'true');
       timerRef.current = setInterval(() => {
+        const now = Date.now();
+        localStorage.setItem('superestrategico_timer_timestamp_ultimo_tick', now.toString());
+
         setSegundos(prev => {
           let next;
           if (modoRegressivo) {
@@ -305,6 +377,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                 timerRef.current = null;
               }
               setRodando(false);
+              localStorage.setItem('superestrategico_timer_rodando', 'false');
               inicializarSessaoAulas(targetMinutos);
               setMostrarFormLog(true);
               next = targetMinutos * 60;
@@ -319,6 +392,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
         });
       }, 1000);
     } else {
+      localStorage.setItem('superestrategico_timer_rodando', 'false');
       if (timerRef.current) clearInterval(timerRef.current);
     }
 
@@ -327,29 +401,59 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     };
   }, [rodando, modoRegressivo, targetMinutos]);
 
+  // Salvaguarda contra fechamento ou reload acidental enquanto cronômetro estiver rodando ou gabarito preenchido
+  useEffect(() => {
+    const temQuestoesMarcadas = Object.values(gabaritoAulas).some(
+      (g: { acertos?: number[]; erros?: number[] }) => (g?.acertos?.length || 0) > 0 || (g?.erros?.length || 0) > 0
+    ) || acertosMarcados.length > 0 || errosMarcados.length > 0;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (rodando || temQuestoesMarcadas) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [rodando, gabaritoAulas, acertosMarcados, errosMarcados]);
+
   // Alternar rodar/pausa
   const handleTogglePlay = () => {
     const nextRodando = !rodando;
     setRodando(nextRodando);
+    localStorage.setItem('superestrategico_timer_rodando', nextRodando.toString());
 
     const timeStr = new Date().toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const nowMs = Date.now();
 
     if (nextRodando) {
       if (!horaInicio) {
         setHoraInicio(timeStr);
         localStorage.setItem('superestrategico_timer_hora_inicio', timeStr);
       }
+      if (!timestampInicio) {
+        setTimestampInicio(nowMs);
+        localStorage.setItem('superestrategico_timer_timestamp_inicio', nowMs.toString());
+      }
+      localStorage.setItem('superestrategico_timer_timestamp_ultimo_tick', nowMs.toString());
       setHoraFim(null);
       localStorage.removeItem('superestrategico_timer_hora_fim');
     } else {
       setHoraFim(timeStr);
       localStorage.setItem('superestrategico_timer_hora_fim', timeStr);
+      localStorage.setItem('superestrategico_timer_timestamp_ultimo_tick', nowMs.toString());
     }
+
+    triggerDebouncedSync();
   };
 
   // Resetar cronômetro
   const handleResetCronometro = () => {
     setRodando(false);
+    localStorage.setItem('superestrategico_timer_rodando', 'false');
     if (modoRegressivo) {
       setSegundos(targetMinutos * 60);
       localStorage.setItem('superestrategico_timer_segundos', (targetMinutos * 60).toString());
@@ -360,6 +464,8 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
     setHoraInicio(null);
     setHoraFim(null);
+    setTimestampInicio(null);
+    setTimestampRetorno(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
     setGabaritoAulas({});
@@ -367,15 +473,20 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_timestamp_inicio');
+    localStorage.removeItem('superestrategico_timer_timestamp_ultimo_tick');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
     localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
     localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
+
+    triggerDebouncedSync();
   };
 
   // Alternar entre contar tempo (Progressivo) ou Cronômetro Alvo do Ciclo (Regressivo)
   const handleToggleTimerMode = (regressivo: boolean) => {
     setRodando(false);
+    localStorage.setItem('superestrategico_timer_rodando', 'false');
     setModoRegressivo(regressivo);
     localStorage.setItem('superestrategico_timer_modo_regressivo', regressivo.toString());
     if (regressivo) {
@@ -385,6 +496,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       setSegundos(0);
       localStorage.setItem('superestrategico_timer_segundos', '0');
     }
+    triggerDebouncedSync();
   };
 
   // Avançar o ciclo
@@ -395,6 +507,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       itemAtualIndice: proximoIndice
     });
     setRodando(false);
+    localStorage.setItem('superestrategico_timer_rodando', 'false');
     setSegundos(0);
     localStorage.setItem('superestrategico_timer_segundos', '0');
     setModoRegressivo(false);
@@ -402,16 +515,23 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
     setHoraInicio(null);
     setHoraFim(null);
+    setTimestampInicio(null);
+    setTimestampRetorno(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
     setGabaritoAulas({});
     setAulasFocoIds([]);
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_timestamp_inicio');
+    localStorage.removeItem('superestrategico_timer_timestamp_ultimo_tick');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
     localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
     localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
+    localStorage.removeItem('superestrategico_timer_aula_selecionada_id');
+
+    triggerDebouncedSync();
   };
 
   // Voltar o ciclo
@@ -422,6 +542,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       itemAtualIndice: proximoIndice
     });
     setRodando(false);
+    localStorage.setItem('superestrategico_timer_rodando', 'false');
     setSegundos(0);
     localStorage.setItem('superestrategico_timer_segundos', '0');
     setModoRegressivo(false);
@@ -429,16 +550,23 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
     setHoraInicio(null);
     setHoraFim(null);
+    setTimestampInicio(null);
+    setTimestampRetorno(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
     setGabaritoAulas({});
     setAulasFocoIds([]);
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
+    localStorage.removeItem('superestrategico_timer_timestamp_inicio');
+    localStorage.removeItem('superestrategico_timer_timestamp_ultimo_tick');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
     localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
     localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
+    localStorage.removeItem('superestrategico_timer_aula_selecionada_id');
+
+    triggerDebouncedSync();
   };
 
   // Formatar Segundos para HH:MM:SS
@@ -524,15 +652,25 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setRodando(false);
     setHoraInicio(null);
     setHoraFim(null);
+    setTimestampInicio(null);
+    setTimestampRetorno(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
+    setGabaritoAulas({});
+    setAulasFocoIds([]);
     setMostrarModalFoco(false);
 
     localStorage.removeItem('superestrategico_timer_segundos');
+    localStorage.removeItem('superestrategico_timer_rodando');
+    localStorage.removeItem('superestrategico_timer_timestamp_inicio');
+    localStorage.removeItem('superestrategico_timer_timestamp_ultimo_tick');
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
+    localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
+    localStorage.removeItem('superestrategico_timer_aula_selecionada_id');
     localStorage.removeItem('superestrategico_timer_modal_open');
 
     alert(`Excelente! Sessão de estudos (${batchPayload.length} aula${batchPayload.length > 1 ? 's' : ''}) salva e vinculada ao material Estratégia TCU. O ciclo sugere avançar de matéria!`);
@@ -592,6 +730,8 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       localStorage.setItem('superestrategico_timer_correct_list', JSON.stringify(next));
       return next;
     });
+
+    triggerDebouncedSync();
   };
 
   const handleToggleErro = (numeroQuestao: number) => {
@@ -628,6 +768,8 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       localStorage.setItem('superestrategico_timer_wrong_list', JSON.stringify(next));
       return next;
     });
+
+    triggerDebouncedSync();
   };
 
   const handleAdicionarAulaAoFoco = (idParaAdicionar: string) => {
@@ -644,6 +786,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       };
     });
     setAulaSelecionadaId(idParaAdicionar);
+    triggerDebouncedSync();
   };
 
   const handleRemoverAulaDoFoco = (idParaRemover: string) => {
@@ -656,6 +799,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     if (aulaSelecionadaId === idParaRemover) {
       setAulaSelecionadaId(novas[0]);
     }
+    triggerDebouncedSync();
   };
 
   const handleClearGabarito = () => {
@@ -668,6 +812,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       setErrosMarcados([]);
       localStorage.removeItem('superestrategico_timer_correct_list');
       localStorage.removeItem('superestrategico_timer_wrong_list');
+      triggerDebouncedSync();
     }
   };
 
@@ -679,6 +824,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       localStorage.removeItem('superestrategico_timer_correct_list');
       localStorage.removeItem('superestrategico_timer_wrong_list');
       localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
+      triggerDebouncedSync();
     }
   };
 
@@ -1795,16 +1941,33 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                     </button>
                   </div>
 
-                  {/* Horários de Início e Fim */}
-                  <div className="flex gap-4 justify-center text-[10px] font-mono text-[#94A3B8] w-full max-w-xs pt-1" id="modal-timer-timestamps">
+                  {/* Horários de Início, Retorno e Duração Total */}
+                  <div className="flex flex-wrap gap-2.5 justify-center text-[10px] font-mono text-[#94A3B8] w-full max-w-md pt-1" id="modal-timer-timestamps">
                     <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#1E293B] px-3 py-1 rounded text-slate-300">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       Início: <strong className="text-white">{horaInicio || '--:--:--'}</strong>
                     </span>
-                    <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#1E293B] px-3 py-1 rounded text-slate-300">
-                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                      Pausa: <strong className="text-white">{horaFim || '--:--:--'}</strong>
-                    </span>
+
+                    {timestampRetorno && (
+                      <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#C5A059]/40 px-3 py-1 rounded text-[#C5A059]" title="Momento em que a página foi recarregada e a contagem foi retomada com precisão">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#C5A059] animate-ping" />
+                        Retorno F5: <strong className="text-white">{new Date(timestampRetorno).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo' })}</strong>
+                      </span>
+                    )}
+
+                    {horaFim ? (
+                      <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#1E293B] px-3 py-1 rounded text-slate-300">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                        Pausa: <strong className="text-white">{horaFim}</strong>
+                      </span>
+                    ) : (
+                      timestampInicio && (
+                        <span className="flex items-center gap-1.5 bg-[#0F172A] border border-[#1E293B] px-3 py-1 rounded text-slate-300" title="Tempo total real decorrido desde o início da sessão">
+                          <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                          Decorrido: <strong className="text-sky-300">{formatarTempo(Math.max(0, Math.floor((Date.now() - timestampInicio) / 1000)))}</strong>
+                        </span>
+                      )
+                    )}
                   </div>
                 </div>
 

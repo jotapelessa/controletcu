@@ -360,7 +360,13 @@ export default function App() {
     if (!conf) return;
     if (conf.timer_segundos !== undefined && conf.timer_segundos !== null) localStorage.setItem('superestrategico_timer_segundos', conf.timer_segundos.toString());
     if (conf.timer_modo_regressivo !== undefined && conf.timer_modo_regressivo !== null) localStorage.setItem('superestrategico_timer_modo_regressivo', conf.timer_modo_regressivo.toString());
-    
+    if (conf.timer_rodando !== undefined && conf.timer_rodando !== null) localStorage.setItem('superestrategico_timer_rodando', conf.timer_rodando.toString());
+    if (conf.timer_timestamp_inicio !== undefined && conf.timer_timestamp_inicio !== null) localStorage.setItem('superestrategico_timer_timestamp_inicio', conf.timer_timestamp_inicio.toString());
+    if (conf.timer_timestamp_ultimo_tick !== undefined && conf.timer_timestamp_ultimo_tick !== null) localStorage.setItem('superestrategico_timer_timestamp_ultimo_tick', conf.timer_timestamp_ultimo_tick.toString());
+    if (conf.timer_gabarito_multi_aulas !== undefined && conf.timer_gabarito_multi_aulas !== null) localStorage.setItem('superestrategico_timer_gabarito_multi_aulas', JSON.stringify(conf.timer_gabarito_multi_aulas));
+    if (conf.timer_aulas_foco_ids !== undefined && conf.timer_aulas_foco_ids !== null) localStorage.setItem('superestrategico_timer_aulas_foco_ids', JSON.stringify(conf.timer_aulas_foco_ids));
+    if (conf.timer_aula_selecionada_id !== undefined && conf.timer_aula_selecionada_id !== null) localStorage.setItem('superestrategico_timer_aula_selecionada_id', conf.timer_aula_selecionada_id);
+
     if (conf.timer_hora_inicio !== undefined) {
       if (conf.timer_hora_inicio) localStorage.setItem('superestrategico_timer_hora_inicio', conf.timer_hora_inicio);
       else localStorage.removeItem('superestrategico_timer_hora_inicio');
@@ -441,6 +447,12 @@ export default function App() {
       const configuracoes = {
         timer_segundos: parseInt(localStorage.getItem('superestrategico_timer_segundos') || '0', 10),
         timer_modo_regressivo: localStorage.getItem('superestrategico_timer_modo_regressivo') === 'true',
+        timer_rodando: localStorage.getItem('superestrategico_timer_rodando') === 'true',
+        timer_timestamp_inicio: parseInt(localStorage.getItem('superestrategico_timer_timestamp_inicio') || '0', 10) || null,
+        timer_timestamp_ultimo_tick: parseInt(localStorage.getItem('superestrategico_timer_timestamp_ultimo_tick') || '0', 10) || null,
+        timer_gabarito_multi_aulas: getLocalStorageItemJson('superestrategico_timer_gabarito_multi_aulas') || {},
+        timer_aulas_foco_ids: getLocalStorageItemJson('superestrategico_timer_aulas_foco_ids') || [],
+        timer_aula_selecionada_id: localStorage.getItem('superestrategico_timer_aula_selecionada_id') || '',
         timer_hora_inicio: localStorage.getItem('superestrategico_timer_hora_inicio'),
         timer_hora_fim: localStorage.getItem('superestrategico_timer_hora_fim'),
         timer_correct_list: getLocalStorageItemJson('superestrategico_timer_correct_list') || [],
