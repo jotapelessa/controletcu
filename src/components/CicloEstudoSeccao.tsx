@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Materia, CicloEstudo, StatusAula, LogSessao } from '../types';
+import { Materia, CicloEstudo, StatusAula, LogSessao, LogSessaoBatchItem } from '../types';
 import { 
   Play, 
   Pause, 
@@ -21,7 +21,9 @@ import {
   Calendar,
   Layers,
   ChevronRight,
-  X
+  X,
+  Plus,
+  Trash2
 } from 'lucide-react';
 
 interface CicloProps {
@@ -29,7 +31,7 @@ interface CicloProps {
   ciclo: CicloEstudo;
   historico: LogSessao[];
   onSalvarCiclo: (novoCiclo: CicloEstudo) => void;
-  onAdicionarLog: (novoLog: Omit<LogSessao, 'id'>) => void;
+  onAdicionarLog: (novoLog: Omit<LogSessao, 'id'> | LogSessaoBatchItem | (Omit<LogSessao, 'id'> | LogSessaoBatchItem)[]) => void;
 }
 
 export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvarCiclo, onAdicionarLog }: CicloProps) {
@@ -92,14 +94,113 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   // Seleção de Aula Relacionada
   const [aulaSelecionadaId, setAulaSelecionadaId] = useState('');
 
-  // Form de Log de Estudos
+  // Form de Log de Estudos Multi-Aulas
+  interface SessaoAulaFormItem {
+    id: string; // id local temporário do card
+    aulaId: string;
+    duracaoMinutos: number;
+    questoesResolvidas: number;
+    questoesAcertadas: number;
+    questoesErradas: number;
+    tipo: 'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards';
+    concluida: boolean;
+    paginaParou?: number;
+    paginasTotais?: number;
+    observacoes?: string;
+  }
+
   const [mostrarFormLog, setMostrarFormLog] = useState(false);
-  const [questoesResolvidas, setQuestoesResolvidas] = useState(0);
-  const [questoesAcertadas, setQuestoesAcertadas] = useState(0);
-  const [questoesErradas, setQuestoesErradas] = useState(0);
-  const [tipoEstudo, setTipoEstudo] = useState<'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards'>('Teoria (PDF)');
-  const [comentarios, setComentarios] = useState('');
+  const [sessaoAulas, setSessaoAulas] = useState<SessaoAulaFormItem[]>([]);
   const [tempoMinutosCustom, setTempoMinutosCustom] = useState(targetMinutos);
+
+  // Inicializar sessaoAulas ao abrir o modal
+  const inicializarSessaoAulas = (duracaoInicial: number) => {
+    const aulaAlvoId = aulaSelecionadaId || materiaAtiva?.aulas[0]?.id || '';
+    const aulaAlvo = materiaAtiva?.aulas.find(a => a.id === aulaAlvoId);
+    
+    setSessaoAulas([
+      {
+        id: `form_item_${Date.now()}_0`,
+        aulaId: aulaAlvoId,
+        duracaoMinutos: duracaoInicial,
+        questoesResolvidas: acertosMarcados.length + errosMarcados.length,
+        questoesAcertadas: acertosMarcados.length,
+        questoesErradas: errosMarcados.length,
+        tipo: 'Teoria (PDF)',
+        concluida: aulaAlvo?.status === StatusAula.Concluido,
+        paginaParou: aulaAlvo?.paginasLidas || undefined,
+        paginasTotais: aulaAlvo?.paginasTotais || undefined,
+        observacoes: ''
+      }
+    ]);
+  };
+
+  const handleAdicionarAulaItem = () => {
+    const aulasDisponiveis = materiaAtiva?.aulas || [];
+    // Tentar selecionar a próxima aula sequencial não presente ainda
+    const idsJaAdicionados = new Set(sessaoAulas.map(s => s.aulaId));
+    const proxima = aulasDisponiveis.find(a => !idsJaAdicionados.has(a.id)) || aulasDisponiveis[0];
+    const novaAulaId = proxima ? proxima.id : '';
+    const aulaObj = aulasDisponiveis.find(a => a.id === novaAulaId);
+
+    setSessaoAulas(prev => [
+      ...prev,
+      {
+        id: `form_item_${Date.now()}_${prev.length}`,
+        aulaId: novaAulaId,
+        duracaoMinutos: 45,
+        questoesResolvidas: 0,
+        questoesAcertadas: 0,
+        questoesErradas: 0,
+        tipo: 'Teoria (PDF)',
+        concluida: aulaObj?.status === StatusAula.Concluido,
+        paginaParou: aulaObj?.paginasLidas || undefined,
+        paginasTotais: aulaObj?.paginasTotais || undefined,
+        observacoes: ''
+      }
+    ]);
+  };
+
+  const handleRemoverAulaItem = (idToRemove: string) => {
+    if (sessaoAulas.length <= 1) return;
+    setSessaoAulas(prev => prev.filter(item => item.id !== idToRemove));
+  };
+
+  const handleAtualizarAulaItem = (id: string, updates: Partial<SessaoAulaFormItem>) => {
+    setSessaoAulas(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const updated = { ...item, ...updates };
+
+      // Se mudou de aula, atualizar valores base de página
+      if (updates.aulaId && updates.aulaId !== item.aulaId) {
+        const novaAulaObj = materiaAtiva?.aulas.find(a => a.id === updates.aulaId);
+        updated.concluida = novaAulaObj?.status === StatusAula.Concluido;
+        updated.paginaParou = novaAulaObj?.paginasLidas || undefined;
+        updated.paginasTotais = novaAulaObj?.paginasTotais || undefined;
+      }
+
+      // Se mudou questoesAcertadas ou questoesResolvidas, manter consistência de erros
+      if (updates.questoesResolvidas !== undefined) {
+        const res = Math.max(0, updates.questoesResolvidas);
+        updated.questoesResolvidas = res;
+        if (updated.questoesAcertadas > res) {
+          updated.questoesAcertadas = res;
+        }
+        updated.questoesErradas = Math.max(0, res - updated.questoesAcertadas);
+      } else if (updates.questoesAcertadas !== undefined) {
+        const ac = Math.max(0, updates.questoesAcertadas);
+        updated.questoesAcertadas = ac;
+        if (ac > updated.questoesResolvidas) {
+          updated.questoesResolvidas = ac;
+          updated.questoesErradas = 0;
+        } else {
+          updated.questoesErradas = Math.max(0, updated.questoesResolvidas - ac);
+        }
+      }
+
+      return updated;
+    }));
+  };
 
   // Última sessão de estudos desta aula específica (memoizado de forma linear O(N) para alta performance)
   const ultimoLog = React.useMemo(() => {
@@ -141,6 +242,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                 timerRef.current = null;
               }
               setRodando(false);
+              inicializarSessaoAulas(targetMinutos);
               setMostrarFormLog(true);
               next = targetMinutos * 60;
             } else {
@@ -197,9 +299,6 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setHoraFim(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
-    setQuestoesResolvidas(0);
-    setQuestoesAcertadas(0);
-    setQuestoesErradas(0);
 
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
@@ -282,7 +381,8 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       ? Math.round((targetMinutos * 60 - segundos) / 60)
       : Math.round(segundos / 60);
 
-    setTempoMinutosCustom(minutosRealizados > 0 ? minutosRealizados : targetMinutos);
+    const duracaoFinal = minutosRealizados > 0 ? minutosRealizados : targetMinutos;
+    setTempoMinutosCustom(duracaoFinal);
     setRodando(false);
 
     if (!horaFim) {
@@ -291,30 +391,60 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
       localStorage.setItem('superestrategico_timer_hora_fim', timeStr);
     }
 
+    inicializarSessaoAulas(duracaoFinal);
     setMostrarFormLog(true);
   };
 
   const handleSubmitSessao = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    onAdicionarLog({
-      data: new Date().toISOString(),
-      materiaId: materiaAtiva.id,
-      aulaId: aulaSelecionadaId,
-      duracaoMinutos: tempoMinutosCustom,
-      questoesResolvidas,
-      questoesAcertadas,
-      questoesErradas,
-      tipo: tipoEstudo,
-      comentarios: comentarios || undefined
+
+    if (sessaoAulas.length === 0) {
+      alert("Por favor, adicione pelo menos uma aula à sessão de estudos.");
+      return;
+    }
+
+    const isoDate = new Date().toISOString();
+    const batchPayload: LogSessaoBatchItem[] = sessaoAulas.map(item => {
+      let progressoPct = item.concluida ? 100 : undefined;
+      if (!item.concluida && item.paginasTotais && item.paginasTotais > 0 && item.paginaParou !== undefined) {
+        progressoPct = Math.min(100, Math.round((item.paginaParou / item.paginasTotais) * 100));
+      }
+
+      const statusAulaFinal: StatusAula = item.concluida 
+        ? StatusAula.Concluido 
+        : (item.tipo === 'Teoria (PDF)' ? StatusAula.LendoPDF : (item.tipo === 'Vídeo' ? StatusAula.AssistindoVideo : StatusAula.NaoIniciado));
+
+      return {
+        log: {
+          data: isoDate,
+          materiaId: materiaAtiva.id,
+          aulaId: item.aulaId,
+          duracaoMinutos: Math.max(1, item.duracaoMinutos || 0),
+          questoesResolvidas: item.questoesResolvidas || 0,
+          questoesAcertadas: item.questoesAcertadas || 0,
+          questoesErradas: item.questoesErradas || 0,
+          tipo: item.tipo,
+          comentarios: item.observacoes ? item.observacoes : undefined,
+          paginaParou: item.concluida ? (item.paginasTotais || item.paginaParou) : item.paginaParou,
+          paginasTotais: item.paginasTotais,
+          progressoPercentual: progressoPct
+        },
+        aulaUpdate: {
+          materiaId: materiaAtiva.id,
+          aulaId: item.aulaId,
+          status: statusAulaFinal,
+          paginasLidas: item.concluida ? (item.paginasTotais || item.paginaParou) : item.paginaParou,
+          paginasTotais: item.paginasTotais,
+          progressoPercentual: progressoPct
+        }
+      };
     });
+
+    onAdicionarLog(batchPayload);
 
     // Resetar campos e localStorage da sessão
     setMostrarFormLog(false);
-    setQuestoesResolvidas(0);
-    setQuestoesAcertadas(0);
-    setQuestoesErradas(0);
-    setComentarios('');
+    setSessaoAulas([]);
     setSegundos(0);
     setRodando(false);
     setHoraInicio(null);
@@ -330,7 +460,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     localStorage.removeItem('superestrategico_timer_wrong_list');
     localStorage.removeItem('superestrategico_timer_modal_open');
 
-    alert("Excelente! Sessão de estudos salva e vinculada ao material Estratégia TCU. O ciclo sugere avançar de matéria!");
+    alert(`Excelente! Sessão de estudos (${batchPayload.length} aula${batchPayload.length > 1 ? 's' : ''}) salva e vinculada ao material Estratégia TCU. O ciclo sugere avançar de matéria!`);
     handleProximoItemCiclo();
   };
 
@@ -374,30 +504,6 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     const novoLimite = limiteQuestoes === 50 ? 100 : 50;
     setLimiteQuestoes(novoLimite);
     localStorage.setItem('superestrategico_timer_limite_questoes', novoLimite.toString());
-  };
-
-  // Sincronizar contagem de questões dos grids com o formulário
-  useEffect(() => {
-    const acertos = acertosMarcados.length;
-    const erros = errosMarcados.length;
-    setQuestoesAcertadas(acertos);
-    setQuestoesErradas(erros);
-    setQuestoesResolvidas(acertos + erros);
-  }, [acertosMarcados, errosMarcados]);
-
-  // Ajustar erros automaticamente quando digita acertos/resolvidas
-  const handleQuestoesAcertadasChange = (val: number) => {
-    setQuestoesAcertadas(val);
-    if (questoesResolvidas >= val) {
-      setQuestoesErradas(questoesResolvidas - val);
-    }
-  };
-
-  const handleQuestoesResolvidasChange = (val: number) => {
-    setQuestoesResolvidas(val);
-    if (val >= questoesAcertadas) {
-      setQuestoesErradas(val - questoesAcertadas);
-    }
   };
 
   // --- ANÁLISE DE CICLOS INTEGRADA ---
@@ -946,139 +1052,301 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
         </div>
       )}
 
-      {/* 3. MODAL / DROPDOWN FORM PARA LOGAR SESSÃO DE ESTUDOS */}
+      {/* 3. MODAL / FORM MULTI-AULAS PARA LOGAR SESSÃO DE ESTUDOS */}
       {mostrarFormLog && (
-        <div className="fixed inset-0 bg-[#0C0E12]/80 backdrop-blur-sm flex items-center justify-center p-4 z-[60] animate-fade-in" id="study-session-log-modal">
-          <div className="bg-[#0F172A] border border-[#1E293B] rounded w-full max-w-lg p-6 shadow-2xl relative">
+        <div className="fixed inset-0 bg-[#0C0E12]/85 backdrop-blur-sm flex items-center justify-center p-3 md:p-6 z-[60] animate-fade-in overflow-y-auto" id="study-session-log-modal">
+          <div className="bg-[#0F172A] border border-[#1E293B] rounded-lg w-full max-w-2xl p-5 md:p-6 shadow-2xl relative my-auto max-h-[90vh] flex flex-col">
             
-            <h3 className="text-lg font-display font-medium text-white mb-2 flex items-center gap-2">
-              <ListPlus size={20} className="text-[#C5A059]" />
-              Salvar Registro de Estudo
-            </h3>
-            <p className="text-xs text-[#94A3B8] mb-6 font-sans">
-              Insira os dados da sua última sessão para manter o edital e taxas de erros atualizados.
-            </p>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-[#1E293B] mb-4">
+              <div>
+                <h3 className="text-base md:text-lg font-display font-medium text-white flex items-center gap-2">
+                  <ListPlus size={20} className="text-[#C5A059]" />
+                  Salvar Registro de Estudo
+                </h3>
+                <p className="text-xs text-[#94A3B8] font-sans mt-0.5">
+                  Matéria Ativa: <strong className="text-white">{materiaAtiva?.nome}</strong> ({materiaAtiva?.sigla})
+                </p>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setMostrarFormLog(false)}
+                className="text-[#64748B] hover:text-white p-1 rounded transition-colors"
+                title="Fechar"
+              >
+                <X size={18} />
+              </button>
+            </div>
 
-            <form onSubmit={handleSubmitSessao} className="space-y-4">
+            <form onSubmit={handleSubmitSessao} className="space-y-4 overflow-y-auto pr-1 flex-1 custom-scrollbar">
               
-              {/* Tópico / Aula Vinculada */}
-              <div>
-                <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Aula / Tópico do Estratégia</label>
-                <select
-                  value={aulaSelecionadaId}
-                  onChange={(e) => setAulaSelecionadaId(e.target.value)}
-                  className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2.5 text-xs text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans"
+              {/* LISTA DE CARDS DE AULAS ESTUDADAS */}
+              <div className="space-y-4">
+                {sessaoAulas.map((item, index) => {
+                  const aulaObj = (materiaAtiva?.aulas || []).find(a => a.id === item.aulaId);
+                  const progressoCalculado = item.concluida 
+                    ? 100 
+                    : (item.paginasTotais && item.paginasTotais > 0 && item.paginaParou !== undefined 
+                        ? Math.min(100, Math.round((item.paginaParou / item.paginasTotais) * 100)) 
+                        : null);
+
+                  return (
+                    <div 
+                      key={item.id} 
+                      className="bg-[#0C0E12] border border-[#1E293B] hover:border-[#C5A059]/40 rounded-lg p-4 space-y-3.5 transition-all relative"
+                    >
+                      {/* Card Header com número e botão remover */}
+                      <div className="flex items-center justify-between pb-2 border-b border-[#1E293B]/60">
+                        <div className="flex items-center gap-2">
+                          <span className="w-5 h-5 rounded-full bg-[#C5A059]/20 text-[#C5A059] border border-[#C5A059]/30 flex items-center justify-center text-[10px] font-mono font-bold">
+                            {index + 1}
+                          </span>
+                          <span className="text-xs font-mono font-bold text-white uppercase tracking-wider">
+                            Aula Estudada #{index + 1}
+                          </span>
+                        </div>
+                        {sessaoAulas.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoverAulaItem(item.id)}
+                            className="text-rose-400/70 hover:text-rose-400 p-1 rounded hover:bg-rose-500/10 transition-colors text-xs flex items-center gap-1"
+                            title="Remover esta aula da sessão"
+                          >
+                            <Trash2 size={13} />
+                            <span className="text-[10px] font-mono">Remover</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Dropdown de Aula e Tipo de Estudo */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">
+                            Tópico / Aula do Estratégia
+                          </label>
+                          <select
+                            value={item.aulaId}
+                            onChange={(e) => handleAtualizarAulaItem(item.id, { aulaId: e.target.value })}
+                            className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans"
+                            required
+                          >
+                            {(materiaAtiva?.aulas || []).map(a => (
+                              <option key={a.id} value={a.id} className="bg-[#0F172A] text-[#E2E8F0]">
+                                Aula {a.numero.toString().padStart(2, '0')} - {a.titulo} ({a.status})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">
+                            Tipo de Estudo
+                          </label>
+                          <select
+                            value={item.tipo}
+                            onChange={(e: any) => handleAtualizarAulaItem(item.id, { tipo: e.target.value })}
+                            className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans"
+                          >
+                            <option value="Teoria (PDF)" className="bg-[#0F172A]">Teoria (PDF)</option>
+                            <option value="Vídeo" className="bg-[#0F172A]">Vídeoaula</option>
+                            <option value="Questões" className="bg-[#0F172A]">Questões</option>
+                            <option value="Revisão" className="bg-[#0F172A]">Revisão</option>
+                            <option value="Flashcards" className="bg-[#0F172A]">Flashcards</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Tempo e Exercícios da Aula */}
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-[#0F172A]/70 p-3 rounded border border-[#1E293B]/70">
+                        <div>
+                          <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">
+                            Duração (min)
+                          </label>
+                          <input 
+                            type="number" 
+                            min="1"
+                            value={item.duracaoMinutos}
+                            onChange={(e) => handleAtualizarAulaItem(item.id, { duracaoMinutos: parseInt(e.target.value) || 0 })}
+                            className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-center text-xs text-[#E2E8F0] font-mono outline-none focus:border-[#C5A059]"
+                            required
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-mono font-bold text-[#94A3B8] uppercase tracking-wider block mb-1">
+                            Total Questões
+                          </label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            value={item.questoesResolvidas}
+                            onChange={(e) => handleAtualizarAulaItem(item.id, { questoesResolvidas: parseInt(e.target.value) || 0 })}
+                            className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-center text-xs font-semibold font-mono text-[#E2E8F0] outline-none focus:border-[#C5A059]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-mono font-bold text-emerald-400 uppercase tracking-wider block mb-1">
+                            Acertos
+                          </label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            value={item.questoesAcertadas}
+                            onChange={(e) => handleAtualizarAulaItem(item.id, { questoesAcertadas: parseInt(e.target.value) || 0 })}
+                            className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-center text-xs font-semibold font-mono text-emerald-400 outline-none focus:border-[#C5A059]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-mono font-bold text-rose-400 uppercase tracking-wider block mb-1">
+                            Erros
+                          </label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            value={item.questoesErradas}
+                            readOnly
+                            className="w-full bg-[#1E293B]/40 border border-[#2D3748] rounded p-2 text-center text-xs font-semibold font-mono text-rose-400 outline-none select-none opacity-80"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Progresso de Páginas e Status da Aula */}
+                      <div className="bg-[#0F172A]/40 border border-[#1E293B]/60 p-3 rounded space-y-2.5">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <label className="text-[10px] font-mono font-bold text-[#C5A059] uppercase tracking-widest block">
+                            Progresso e Leitura do PDF / Aula:
+                          </label>
+                          
+                          {/* Toggle Concluída vs Em Andamento */}
+                          <div className="flex items-center gap-3">
+                            <label className="flex items-center gap-1.5 cursor-pointer text-xs text-slate-300 select-none">
+                              <input 
+                                type="checkbox"
+                                checked={item.concluida}
+                                onChange={(e) => handleAtualizarAulaItem(item.id, { concluida: e.target.checked })}
+                                className="w-3.5 h-3.5 accent-[#C5A059] rounded cursor-pointer"
+                              />
+                              <span className={item.concluida ? 'text-emerald-400 font-bold' : ''}>
+                                {item.concluida ? '✓ Aula Concluída (100%)' : 'Marcar como Concluída'}
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* Campos de Páginas se não concluída ou para detalhamento */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                          <div>
+                            <label className="text-[10px] font-mono text-[#64748B] block mb-1">
+                              {item.concluida ? 'Total Lido (págs)' : 'Parou na Página:'}
+                            </label>
+                            <input 
+                              type="number" 
+                              min="0"
+                              placeholder="Ex: 28"
+                              value={item.paginaParou ?? ''}
+                              onChange={(e) => handleAtualizarAulaItem(item.id, { paginaParou: e.target.value === '' ? undefined : parseInt(e.target.value) || 0 })}
+                              className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs font-mono text-[#E2E8F0] outline-none focus:border-[#C5A059]"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-mono text-[#64748B] block mb-1">
+                              Total de Páginas do PDF:
+                            </label>
+                            <input 
+                              type="number" 
+                              min="1"
+                              placeholder="Ex: 100"
+                              value={item.paginasTotais ?? ''}
+                              onChange={(e) => handleAtualizarAulaItem(item.id, { paginasTotais: e.target.value === '' ? undefined : parseInt(e.target.value) || 0 })}
+                              className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs font-mono text-[#E2E8F0] outline-none focus:border-[#C5A059]"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-mono text-[#64748B] block mb-1">
+                              Progresso Calculado:
+                            </label>
+                            <div className="w-full bg-[#0C0E12] border border-[#1E293B] rounded p-2 text-xs font-mono flex items-center justify-between">
+                              <span className="text-[#94A3B8]">
+                                {progressoCalculado !== null ? `${progressoCalculado}%` : '—'}
+                              </span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${item.concluida ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/10 text-amber-300'}`}>
+                                {item.concluida ? 'Concluída' : 'Em Andamento'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Observações da Aula */}
+                      <div>
+                        <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">
+                          Observações desta aula (opcional)
+                        </label>
+                        <input 
+                          type="text" 
+                          value={item.observacoes || ''}
+                          onChange={(e) => handleAtualizarAulaItem(item.id, { observacoes: e.target.value })}
+                          placeholder="Ex: Anotações da teoria, pontos que mais errou..."
+                          className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs text-[#E2E8F0] outline-none font-sans focus:border-[#C5A059]"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* BOTÃO PARA ADICIONAR OUTRA AULA NA MESMA SESSÃO */}
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={handleAdicionarAulaItem}
+                  className="w-full py-2.5 px-3 bg-[#1E293B]/60 hover:bg-[#1E293B] border border-dashed border-[#C5A059]/40 hover:border-[#C5A059] rounded text-xs font-mono font-bold text-[#C5A059] flex items-center justify-center gap-2 transition-all cursor-pointer"
                 >
-                  {(materiaAtiva?.aulas || []).map(a => (
-                    <option key={a.id} value={a.id} className="bg-[#0F172A] text-[#E2E8F0]">
-                      Aula {a.numero.toString().padStart(2, '0')} - {a.titulo} ({a.status})
-                    </option>
-                  ))}
-                </select>
+                  <Plus size={14} />
+                  + Adicionar Outra Aula Nesta Sessão (Multi-Aulas)
+                </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Matéria</label>
-                  <input 
-                    type="text" 
-                    readOnly 
-                    value={materiaAtiva?.nome || 'Nenhuma matéria ativa'}
-                    className="w-full bg-[#0C0E12] border border-[#1E293B] rounded p-2.5 text-xs text-white font-bold outline-none font-sans"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Tipo de Estudo</label>
-                  <select
-                    value={tipoEstudo}
-                    onChange={(e: any) => setTipoEstudo(e.target.value)}
-                    className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-xs text-[#E2E8F0] outline-none focus:border-[#C5A059] font-sans"
-                  >
-                    <option value="Teoria (PDF)" className="bg-[#0F172A]">Teoria (PDF)</option>
-                    <option value="Vídeo" className="bg-[#0F172A]">Vídeoaula</option>
-                    <option value="Questões" className="bg-[#0F172A]">Resolução de Questões</option>
-                    <option value="Revisão" className="bg-[#0F172A]">Revisão Espaçada</option>
-                    <option value="Flashcards" className="bg-[#0F172A]">Flashcards</option>
-                  </select>
-                </div>
-              </div>
+              {/* CONSOLIDAÇÃO TOTAL DA SESSÃO */}
+              {(() => {
+                const totalMin = sessaoAulas.reduce((acc, curr) => acc + (curr.duracaoMinutos || 0), 0);
+                const totalQ = sessaoAulas.reduce((acc, curr) => acc + (curr.questoesResolvidas || 0), 0);
+                const totalAc = sessaoAulas.reduce((acc, curr) => acc + (curr.questoesAcertadas || 0), 0);
+                const totalErr = sessaoAulas.reduce((acc, curr) => acc + (curr.questoesErradas || 0), 0);
+                const pctGeral = totalQ > 0 ? Math.round((totalAc / totalQ) * 100) : 0;
 
-              {/* Tempo dedicado */}
-              <div>
-                <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Tempo Estudado (minutos)</label>
-                <input 
-                  type="number" 
-                  value={tempoMinutosCustom}
-                  onChange={(e) => setTempoMinutosCustom(parseInt(e.target.value) || 0)}
-                  className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2.5 text-xs text-[#E2E8F0] outline-none font-mono focus:border-[#C5A059]"
-                  required
-                />
-              </div>
-
-              {/* Seção das Questões */}
-              <div className="bg-[#0C0E12] border border-[#1E293B] p-4 rounded space-y-3">
-                <h5 className="text-[10px] font-mono font-bold text-[#C5A059] uppercase tracking-widest block">Exercícios Resolvidos (Banca/Estratégia)</h5>
-                
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-[10px] font-bold text-[#94A3B8] block mb-1 font-mono">Total</label>
-                    <input 
-                      type="number" 
-                      min="0"
-                      value={questoesResolvidas}
-                      onChange={(e) => handleQuestoesResolvidasChange(parseInt(e.target.value) || 0)}
-                      className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-center text-xs font-semibold font-mono text-[#E2E8F0]"
-                    />
+                return (
+                  <div className="bg-[#0C0E12] border border-[#C5A059]/30 rounded-lg p-3 text-xs font-mono flex flex-wrap items-center justify-between gap-3 shadow-inner">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[#C5A059] font-bold uppercase tracking-wider text-[11px]">Resumo Consolidado:</span>
+                      <span className="text-white font-bold">{sessaoAulas.length} aula{sessaoAulas.length > 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-slate-300 text-[11px]">
+                      <span>Tempo Total: <strong className="text-white">{totalMin} min</strong></span>
+                      <span>Exercícios: <strong className="text-white">{totalQ}</strong> (<strong className="text-emerald-400">+{totalAc}</strong> / <strong className="text-rose-400">-{totalErr}</strong> {totalQ > 0 ? `· ${pctGeral}%` : ''})</span>
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-emerald-400 block mb-1 font-mono">Acertos</label>
-                    <input 
-                      type="number" 
-                      min="0"
-                      max={questoesResolvidas}
-                      value={questoesAcertadas}
-                      onChange={(e) => handleQuestoesAcertadasChange(parseInt(e.target.value) || 0)}
-                      className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2 text-center text-xs font-semibold font-mono text-emerald-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-rose-400 block mb-1 font-mono">Erros</label>
-                    <input 
-                      type="number" 
-                      min="0"
-                      value={questoesErradas}
-                      readOnly
-                      className="w-full bg-[#1E293B]/40 border border-[#2D3748] rounded p-2 text-center text-xs font-semibold font-mono text-rose-400 outline-none select-none opacity-70"
-                    />
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
 
-              {/* Comentarios */}
-              <div>
-                <label className="text-[10px] font-mono font-bold text-[#64748B] uppercase tracking-wider block mb-1">Observações / Tópicos Aprendidos</label>
-                <textarea 
-                  value={comentarios}
-                  onChange={(e) => setComentarios(e.target.value)}
-                  placeholder="Ex: Teoria de Tomada de Contas Especial fechada. Guardar os limites de alçada do TCU."
-                  className="w-full bg-[#1E293B] border border-[#2D3748] rounded p-2.5 text-xs text-[#E2E8F0] outline-none h-20 resize-none font-sans focus:border-[#C5A059]"
-                />
-              </div>
-
-              {/* Ações */}
-              <div className="flex justify-end space-x-2 pt-2" id="modal-footer-actions">
+              {/* Ações do Rodapé */}
+              <div className="flex justify-end space-x-2 pt-2 border-t border-[#1E293B]" id="modal-footer-actions">
                 <button
                   type="button"
                   onClick={() => setMostrarFormLog(false)}
-                  className="px-4 py-2 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#E2E8F0] border border-[#2D3748] rounded text-xs font-semibold font-sans transition-colors"
+                  className="px-4 py-2 bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-[#E2E8F0] border border-[#2D3748] rounded text-xs font-semibold font-sans transition-colors cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#C5A059] text-black font-semibold hover:bg-[#C5A059]/90 rounded text-xs font-sans transition-colors flex items-center gap-1.5 shadow-md shadow-[#C5A059]/10"
+                  className="px-5 py-2 bg-[#C5A059] text-black font-semibold hover:bg-[#C5A059]/90 rounded text-xs font-sans transition-colors flex items-center gap-1.5 shadow-md shadow-[#C5A059]/10 cursor-pointer"
                 >
-                  <CheckSquare size={14} /> Salvar e Avançar
+                  <CheckSquare size={14} /> Salvar e Avançar Ciclo
                 </button>
               </div>
             </form>

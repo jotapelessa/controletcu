@@ -16,6 +16,9 @@ export interface Aula {
   questoesAcertadas: number;
   questoesErradas: number;
   horasEstudadas: number; // in hours (decimal)
+  paginasTotais?: number;
+  paginasLidas?: number;
+  progressoPercentual?: number;
 }
 
 export interface Materia {
@@ -86,6 +89,21 @@ export interface LogSessao {
   questoesErradas: number;
   tipo: 'Teoria (PDF)' | 'Vídeo' | 'Questões' | 'Revisão' | 'Flashcards';
   comentarios?: string;
+  paginaParou?: number;
+  paginasTotais?: number;
+  progressoPercentual?: number;
+}
+
+export interface LogSessaoBatchItem {
+  log: Omit<LogSessao, 'id'>;
+  aulaUpdate?: {
+    materiaId: string;
+    aulaId: string;
+    status: StatusAula;
+    paginasLidas?: number;
+    paginasTotais?: number;
+    progressoPercentual?: number;
+  };
 }
 
 export interface EstatisticasGerais {

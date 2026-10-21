@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { carregarDadosIniciais, salvarMaterias, salvarCiclo, salvarSimulados, salvarRevisoes, salvarHistorico, MATERIAS_PADRAO, CICLO_PADRAO, ajustarEMesclarMaterias, ajustarEMesclarCiclo } from './data';
-import { Materia, CicloEstudo, Simulado, RevisaoEspacada, LogSessao, StatusAula, Aula } from './types';
+import { Materia, CicloEstudo, Simulado, RevisaoEspacada, LogSessao, StatusAula, Aula, LogSessaoBatchItem } from './types';
 import DashboardStats from './components/DashboardStats';
 import CicloEstudoSeccao from './components/CicloEstudoSeccao';
 import PlanejamentoSemanal from './components/PlanejamentoSemanal';
@@ -10,7 +10,7 @@ import SimuladosBanca from './components/SimuladosBanca';
 import IADiagnostico from './components/IADiagnostico';
 import DadosEBackup from './components/DadosEBackup';
 import { motion, AnimatePresence } from 'motion/react';
-import { Shield, BookOpen, Clock, Calendar, Award, Sparkles, LogOut, CheckCircle, Flame, User, ListCollapse, ShieldAlert, RefreshCw } from 'lucide-react';
+import { Shield, BookOpen, Clock, Calendar, Award, LogOut, CheckCircle, Flame, User, ListCollapse, ShieldAlert, RefreshCw } from 'lucide-react';
 import { supabase, isSupabaseConfigured, getAuthenticatedClient } from './lib/supabase';
 import SupabaseAuthModal from './components/SupabaseAuthModal';
 import Homepage, { DEFAULT_CMS_CONTENT } from './components/Homepage';
@@ -741,7 +741,10 @@ export default function App() {
         questoesAcertadas: p.questoes_acertadas ?? p.questoesAcertadas ?? 0,
         questoesErradas: p.questoes_erradas ?? p.questoesErradas ?? 0,
         tipo: p.tipo as any,
-        comentarios: p.comentarios || undefined
+        comentarios: p.comentarios || undefined,
+        paginaParou: p.pagina_parou ?? p.paginaParou ?? undefined,
+        paginasTotais: p.paginas_totais ?? p.paginasTotais ?? undefined,
+        progressoPercentual: p.progresso_percentual ?? p.progressoPercentual ?? undefined
       }));
 
       // Fallback: se historico_logs estiver vazio, tenta extrair de data.historico em user_data_sync
@@ -756,7 +759,10 @@ export default function App() {
           questoesAcertadas: p.questoesAcertadas ?? p.questoes_acertadas ?? 0,
           questoesErradas: p.questoesErradas ?? p.questoes_erradas ?? 0,
           tipo: p.tipo || 'Teoria (PDF)',
-          comentarios: p.comentarios || undefined
+          comentarios: p.comentarios || undefined,
+          paginaParou: p.paginaParou ?? p.pagina_parou ?? undefined,
+          paginasTotais: p.paginasTotais ?? p.paginas_totais ?? undefined,
+          progressoPercentual: p.progressoPercentual ?? p.progresso_percentual ?? undefined
         }));
       }
 
@@ -1082,99 +1088,162 @@ export default function App() {
     setAbaAtiva('painel');
   };
 
-  // ADICIONAR LOG SESSÃO (Chocado na Sessão do Cronômetro)
-  const handleAdicionarLogSessao = (novoLogNoId: Omit<LogSessao, 'id'>) => {
-    const logId = `log_${Date.now()}`;
-    const novoLog: LogSessao = {
-      ...novoLogNoId,
-      id: logId
-    };
+  // ADICIONAR LOG SESSÃO (Suporta registro individual ou múltiplos registros/aulas em lote)
+  const handleAdicionarLogSessao = (
+    entrada: Omit<LogSessao, 'id'> | LogSessaoBatchItem | (Omit<LogSessao, 'id'> | LogSessaoBatchItem)[]
+  ) => {
+    const rawItems = Array.isArray(entrada) ? entrada : [entrada];
+    if (rawItems.length === 0) return;
 
-    const historicoAtualizado = [novoLog, ...historico];
-    historicoRef.current = historicoAtualizado;
-    setHistorico(historicoAtualizado);
-    salvarHistorico(historicoAtualizado);
-
-    // AUTOMATIZAÇÃO PREMIUM DE STATUS DO EDITAL:
-    // Atualizar a aula correspondente nas matérias
-    const novasMaterias = materias.map(m => {
-      if (m.id !== novoLog.materiaId) return m;
-
-      return {
-        ...m,
-        aulas: m.aulas.map(a => {
-          if (a.id !== novoLog.aulaId) return a;
-
-          // Somar horas e questões ao lesson tracker
-          const novasHoras = (a.horasEstudadas || 0) + (novoLog.duracaoMinutos / 60);
-          const novasQuestResolv = (a.questoesResolvidas || 0) + novoLog.questoesResolvidas;
-          const novasQuestAcertadas = (a.questoesAcertadas || 0) + novoLog.questoesAcertadas;
-          const novasQuestErradas = (a.questoesErradas || 0) + novoLog.questoesErradas;
-          
-          let novoStatus = a.status;
-          if (novoLog.tipo === 'Teoria (PDF)') {
-            novoStatus = StatusAula.LendoPDF;
-          } else if (novoLog.tipo === 'Vídeo') {
-            novoStatus = StatusAula.AssistindoVideo;
-          } else if (novoLog.tipo === 'Revisão' || novoLog.tipo === 'Flashcards') {
-            novoStatus = StatusAula.Revisando;
-          } else if (novoLog.tipo === 'Questões' && novasQuestResolv >= 10) {
-            novoStatus = StatusAula.Concluido;
-          }
-
-          // Se concluiu as questões de forma geral, marcar como Concluido
-          if (novoLog.questoesResolvidas > 0 && novasQuestResolv >= 15 && novasQuestAcertadas / novasQuestResolv >= 0.7) {
-            novoStatus = StatusAula.Concluido;
-          }
-
-          return {
-            ...a,
-            horasEstudadas: novasHoras,
-            questoesResolvidas: novasQuestResolv,
-            questoesAcertadas: novasQuestAcertadas,
-            questoesErradas: novasQuestErradas,
-            status: novoStatus,
-            dataConclusao: novoStatus === StatusAula.Concluido ? new Date().toISOString().split('T')[0] : a.dataConclusao
-          };
-        })
-      };
+    // Normalizar para lista de LogSessaoBatchItem
+    const batchItems: LogSessaoBatchItem[] = rawItems.map(item => {
+      if ('log' in item) {
+        return item as LogSessaoBatchItem;
+      }
+      return { log: item as Omit<LogSessao, 'id'> };
     });
 
-    materiasRef.current = novasMaterias;
-    setMaterias(novasMaterias);
-    salvarMaterias(novasMaterias);
+    const now = Date.now();
+    const novosLogs: LogSessao[] = batchItems.map((item, idx) => ({
+      ...item.log,
+      id: `log_${now}_${idx}_${Math.random().toString(36).substring(2, 7)}`
+    }));
 
-    // AUTOMATIZAÇÃO PREMIUM DE REVISÃO ESPAÇADA AUTOMÁTICA:
-    // Se a sessão foi de Teoria (PDF) ou Vídeo, agendar uma revisão de 24 horas para o conteúdo!
-    if (novoLog.tipo === 'Teoria (PDF)' || novoLog.tipo === 'Vídeo') {
-      const materiaInfo = materias.find(m => m.id === novoLog.materiaId);
-      const aulaInfo = materiaInfo?.aulas.find(a => a.id === novoLog.aulaId);
+    // 1. Atualizar histórico atomicamente
+    setHistorico(prev => {
+      const atualizado = [...novosLogs, ...prev];
+      historicoRef.current = atualizado;
+      salvarHistorico(atualizado);
+      return atualizado;
+    });
 
-      const alvoAmanha = new Date();
-      alvoAmanha.setDate(alvoAmanha.getDate() + 1);
+    // 2. Atualizar matérias e aulas atomicamente
+    setMaterias(prevMaterias => {
+      const novasMaterias = prevMaterias.map(m => {
+        // Verificar se algum item afeta esta matéria
+        const itensMateria = batchItems.filter(b => b.log.materiaId === m.id);
+        if (itensMateria.length === 0) return m;
 
-      const novaRevisaoAuto: RevisaoEspacada = {
-        id: `rev_auto_${Date.now()}`,
-        materiaId: novoLog.materiaId,
-        aulaId: novoLog.aulaId,
-        titulo: `Revisão de 24h: ${materiaInfo?.sigla} - Aula ${aulaInfo?.numero.toString().padStart(2, '0')}`,
-        dataCriacao: new Date().toISOString(),
-        dataRevisaoAlvo: alvoAmanha.toISOString(),
-        intervaloDias: 1,
-        concluida: false,
-        etapa: 1,
-        historico: [
-          { data: new Date().toISOString(), status: 'agendada' }
-        ]
-      };
+        return {
+          ...m,
+          aulas: m.aulas.map(a => {
+            const itemAula = itensMateria.find(b => b.log.aulaId === a.id);
+            if (!itemAula) return a;
 
-      const novasRevisoes = [...revisoes, novaRevisaoAuto];
-      revisoesRef.current = novasRevisoes;
-      setRevisoes(novasRevisoes);
-      salvarRevisoes(novasRevisoes);
+            const log = itemAula.log;
+            const updateExplicit = itemAula.aulaUpdate;
+
+            const novasHoras = (a.horasEstudadas || 0) + (log.duracaoMinutos / 60);
+            const novasQuestResolv = (a.questoesResolvidas || 0) + log.questoesResolvidas;
+            const novasQuestAcertadas = (a.questoesAcertadas || 0) + log.questoesAcertadas;
+            const novasQuestErradas = (a.questoesErradas || 0) + log.questoesErradas;
+
+            // Determinar status
+            let novoStatus = a.status;
+            if (updateExplicit?.status) {
+              novoStatus = updateExplicit.status;
+            } else if (log.progressoPercentual !== undefined && log.progressoPercentual >= 100) {
+              novoStatus = StatusAula.Concluido;
+            } else if (log.tipo === 'Teoria (PDF)') {
+              novoStatus = StatusAula.LendoPDF;
+            } else if (log.tipo === 'Vídeo') {
+              novoStatus = StatusAula.AssistindoVideo;
+            } else if (log.tipo === 'Revisão' || log.tipo === 'Flashcards') {
+              novoStatus = StatusAula.Revisando;
+            } else if (log.tipo === 'Questões' && novasQuestResolv >= 10) {
+              novoStatus = StatusAula.Concluido;
+            }
+
+            if (!updateExplicit?.status && log.questoesResolvidas > 0 && novasQuestResolv >= 15 && novasQuestAcertadas / novasQuestResolv >= 0.7) {
+              novoStatus = StatusAula.Concluido;
+            }
+
+            // Páginas e progresso
+            const paginasLidas = updateExplicit?.paginasLidas !== undefined
+              ? updateExplicit.paginasLidas
+              : (log.paginaParou !== undefined ? log.paginaParou : a.paginasLidas);
+
+            const paginasTotais = updateExplicit?.paginasTotais !== undefined
+              ? updateExplicit.paginasTotais
+              : (log.paginasTotais !== undefined ? log.paginasTotais : a.paginasTotais);
+
+            let progressoPercentual = updateExplicit?.progressoPercentual !== undefined
+              ? updateExplicit.progressoPercentual
+              : (log.progressoPercentual !== undefined ? log.progressoPercentual : a.progressoPercentual);
+
+            if (novoStatus === StatusAula.Concluido) {
+              progressoPercentual = 100;
+              if (paginasTotais && (!paginasLidas || paginasLidas < paginasTotais)) {
+                // se concluída e temos totais, lidas = totais
+              }
+            } else if (paginasTotais && paginasTotais > 0 && paginasLidas !== undefined) {
+              progressoPercentual = Math.min(100, Math.round((paginasLidas / paginasTotais) * 100));
+            }
+
+            return {
+              ...a,
+              horasEstudadas: novasHoras,
+              questoesResolvidas: novasQuestResolv,
+              questoesAcertadas: novasQuestAcertadas,
+              questoesErradas: novasQuestErradas,
+              status: novoStatus,
+              paginasLidas,
+              paginasTotais,
+              progressoPercentual,
+              dataConclusao: novoStatus === StatusAula.Concluido ? (a.dataConclusao || new Date().toISOString().split('T')[0]) : a.dataConclusao
+            };
+          })
+        };
+      });
+
+      materiasRef.current = novasMaterias;
+      salvarMaterias(novasMaterias);
+      return novasMaterias;
+    });
+
+    // 3. Automatização de Revisões Espaçadas de 24h para Teoria / Vídeo
+    const novasRevisoesAuto: RevisaoEspacada[] = [];
+    const alvoAmanha = new Date();
+    alvoAmanha.setDate(alvoAmanha.getDate() + 1);
+
+    batchItems.forEach((bItem, i) => {
+      const log = bItem.log;
+      if (log.tipo === 'Teoria (PDF)' || log.tipo === 'Vídeo') {
+        const materiaInfo = (materiasRef.current || materias).find(m => m.id === log.materiaId);
+        const aulaInfo = materiaInfo?.aulas.find(a => a.id === log.aulaId);
+
+        novasRevisoesAuto.push({
+          id: `rev_auto_${now}_${i}`,
+          materiaId: log.materiaId,
+          aulaId: log.aulaId,
+          titulo: `Revisão de 24h: ${materiaInfo?.sigla || ''} - Aula ${aulaInfo ? aulaInfo.numero.toString().padStart(2, '0') : ''}`,
+          dataCriacao: new Date().toISOString(),
+          dataRevisaoAlvo: alvoAmanha.toISOString(),
+          intervaloDias: 1,
+          concluida: false,
+          etapa: 1,
+          historico: [
+            { data: new Date().toISOString(), status: 'agendada' }
+          ]
+        });
+      }
+    });
+
+    if (novasRevisoesAuto.length > 0) {
+      setRevisoes(prev => {
+        const atualizadas = [...prev, ...novasRevisoesAuto];
+        revisoesRef.current = atualizadas;
+        salvarRevisoes(atualizadas);
+        return atualizadas;
+      });
     }
 
     localStorage.setItem('superestrategico_last_sync_time_raw', Date.now().toString());
+
+    // 4. Sincronização em nuvem se o usuário estiver autenticado
+    if (userSession?.user?.id) {
+      sendDadosToCloud(userSession.user.id);
+    }
   };
 
   // Navegar direto para matéria do Edital quando clica no Dashboard
@@ -1900,15 +1969,6 @@ export default function App() {
 
         </div>
       </header>
-
-      {/* NOTIFICAÇÃO DE REBRANDING / MIGRAÇÃO DE DADOS */}
-      <div className="bg-gradient-to-r from-amber-500/10 to-[#C5A059]/5 border-b border-[#C5A059]/20 text-amber-200 text-xs py-3 px-4 text-center flex items-center justify-center gap-2 font-sans shrink-0">
-        <Sparkles size={14} className="text-[#C5A059] shrink-0" />
-        <span>
-          <strong>Aviso de Atualização:</strong> O TCU Auditor agora é <strong>SuperEstrategico</strong>! Expandimos o suporte para qualquer curso ou edital do Estratégia Concursos. Seus dados e progresso anteriores foram importados automaticamente e estão 100% seguros.
-        </span>
-      </div>
-
 
       {/* PAINEL DE NAVEGAÇÃO DE PÁGINAS (TABS) */}
       <nav className="bg-[#0C0E12] border-b border-[#1E293B] sticky top-0 z-40" id="superestrategico-navigation-rail">
