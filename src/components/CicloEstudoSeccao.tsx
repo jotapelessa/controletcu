@@ -53,6 +53,29 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
   const [horaInicio, setHoraInicio] = useState<string | null>(() => localStorage.getItem('superestrategico_timer_hora_inicio'));
   const [horaFim, setHoraFim] = useState<string | null>(() => localStorage.getItem('superestrategico_timer_hora_fim'));
+
+  // Multi-Aulas Gabarito em Tempo Real (Map de aulaId -> { acertos: number[], erros: number[] })
+  const [gabaritoAulas, setGabaritoAulas] = useState<Record<string, { acertos: number[]; erros: number[] }>>(() => {
+    try {
+      const saved = localStorage.getItem('superestrategico_timer_gabarito_multi_aulas');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // fallback
+    }
+    return {};
+  });
+
+  // Lista de aulas incluídas no bloco de foco ativo (IDs)
+  const [aulasFocoIds, setAulasFocoIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('superestrategico_timer_aulas_foco_ids');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // fallback
+    }
+    return [];
+  });
+
   const [acertosMarcados, setAcertosMarcados] = useState<number[]>(() => {
     const saved = localStorage.getItem('superestrategico_timer_correct_list');
     return saved ? JSON.parse(saved) : [];
@@ -113,26 +136,46 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   const [sessaoAulas, setSessaoAulas] = useState<SessaoAulaFormItem[]>([]);
   const [tempoMinutosCustom, setTempoMinutosCustom] = useState(targetMinutos);
 
-  // Inicializar sessaoAulas ao abrir o modal
+  // Inicializar sessaoAulas ao abrir o modal, transportando os gabaritos registrados no Foco Ativo
   const inicializarSessaoAulas = (duracaoInicial: number) => {
-    const aulaAlvoId = aulaSelecionadaId || materiaAtiva?.aulas[0]?.id || '';
-    const aulaAlvo = materiaAtiva?.aulas.find(a => a.id === aulaAlvoId);
-    
-    setSessaoAulas([
-      {
-        id: `form_item_${Date.now()}_0`,
-        aulaId: aulaAlvoId,
-        duracaoMinutos: duracaoInicial,
-        questoesResolvidas: acertosMarcados.length + errosMarcados.length,
-        questoesAcertadas: acertosMarcados.length,
-        questoesErradas: errosMarcados.length,
+    // Determinar quais aulas foram ativadas no modo foco
+    const idsFoco = aulasFocoIds.filter(id => materiaAtiva?.aulas.some(a => a.id === id));
+    const aulasAlvoIds = idsFoco.length > 0 
+      ? idsFoco 
+      : [aulaSelecionadaId || materiaAtiva?.aulas[0]?.id || ''];
+
+    // Se temos mais de uma aula, dividir o tempo da sessão proporcionalmente
+    const minutosPorAula = Math.max(1, Math.round(duracaoInicial / aulasAlvoIds.length));
+    let minutosRestantes = duracaoInicial;
+
+    const itensCriados: SessaoAulaFormItem[] = aulasAlvoIds.map((idAula, index) => {
+      const aulaObj = materiaAtiva?.aulas.find(a => a.id === idAula);
+      const gab = gabaritoAulas[idAula];
+      
+      // Se for a aula única e gabaritoAulas não tem registro, usa acertosMarcados/errosMarcados legados
+      const acertos = gab ? gab.acertos.length : (idAula === aulaSelecionadaId ? acertosMarcados.length : 0);
+      const erros = gab ? gab.erros.length : (idAula === aulaSelecionadaId ? errosMarcados.length : 0);
+      
+      // Alocação de minutos garantindo a soma exata
+      const duracaoAula = index === aulasAlvoIds.length - 1 ? minutosRestantes : minutosPorAula;
+      minutosRestantes = Math.max(0, minutosRestantes - duracaoAula);
+
+      return {
+        id: `form_item_${Date.now()}_${index}`,
+        aulaId: idAula,
+        duracaoMinutos: Math.max(1, duracaoAula),
+        questoesResolvidas: acertos + erros,
+        questoesAcertadas: acertos,
+        questoesErradas: erros,
         tipo: 'Teoria (PDF)',
-        concluida: aulaAlvo?.status === StatusAula.Concluido,
-        paginaParou: aulaAlvo?.paginasLidas || undefined,
-        paginasTotais: aulaAlvo?.paginasTotais || undefined,
+        concluida: aulaObj?.status === StatusAula.Concluido,
+        paginaParou: aulaObj?.paginasLidas || undefined,
+        paginasTotais: aulaObj?.paginasTotais || undefined,
         observacoes: ''
-      }
-    ]);
+      };
+    });
+
+    setSessaoAulas(itensCriados);
   };
 
   const handleAdicionarAulaItem = () => {
@@ -225,9 +268,29 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   useEffect(() => {
     if (materiaAtiva?.aulas && materiaAtiva.aulas.length > 0) {
       const naoConcluida = materiaAtiva.aulas.find(a => a.status !== StatusAula.Concluido);
-      setAulaSelecionadaId(naoConcluida ? naoConcluida.id : materiaAtiva.aulas[0].id);
+      const defaultId = naoConcluida ? naoConcluida.id : materiaAtiva.aulas[0].id;
+      setAulaSelecionadaId(prev => {
+        // Se já existe e pertence à matéria atual, manter
+        if (prev && materiaAtiva.aulas.some(a => a.id === prev)) return prev;
+        return defaultId;
+      });
+      setAulasFocoIds(prev => {
+        // Filtrar IDs que pertençam à matéria ativa atual
+        const pertencem = prev.filter(id => materiaAtiva.aulas.some(a => a.id === id));
+        if (pertencem.length > 0) return pertencem;
+        return [defaultId];
+      });
     }
   }, [materiaAtiva]);
+
+  // Persistir gabaritoAulas e aulasFocoIds no localStorage
+  useEffect(() => {
+    localStorage.setItem('superestrategico_timer_gabarito_multi_aulas', JSON.stringify(gabaritoAulas));
+  }, [gabaritoAulas]);
+
+  useEffect(() => {
+    localStorage.setItem('superestrategico_timer_aulas_foco_ids', JSON.stringify(aulasFocoIds));
+  }, [aulasFocoIds]);
 
   // Efeito do Cronômetro
   useEffect(() => {
@@ -299,11 +362,15 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setHoraFim(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
+    setGabaritoAulas({});
+    setAulasFocoIds([]);
 
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
+    localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
   };
 
   // Alternar entre contar tempo (Progressivo) ou Cronômetro Alvo do Ciclo (Regressivo)
@@ -337,10 +404,14 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setHoraFim(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
+    setGabaritoAulas({});
+    setAulasFocoIds([]);
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
+    localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
   };
 
   // Voltar o ciclo
@@ -360,10 +431,14 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     setHoraFim(null);
     setAcertosMarcados([]);
     setErrosMarcados([]);
+    setGabaritoAulas({});
+    setAulasFocoIds([]);
     localStorage.removeItem('superestrategico_timer_hora_inicio');
     localStorage.removeItem('superestrategico_timer_hora_fim');
     localStorage.removeItem('superestrategico_timer_correct_list');
     localStorage.removeItem('superestrategico_timer_wrong_list');
+    localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
+    localStorage.removeItem('superestrategico_timer_aulas_foco_ids');
   };
 
   // Formatar Segundos para HH:MM:SS
@@ -464,8 +539,49 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     handleProximoItemCiclo();
   };
 
-  // Funções para controle do grid gabarito
+  // Funções para controle do grid gabarito (Multi-Aulas e Aula Única)
+  const aulaGabaritoAtivaId = aulaSelecionadaId || (aulasFocoIds[0] || materiaAtiva?.aulas[0]?.id || '');
+
+  // Obter acertos da aula ativa
+  const acertosAtuais = React.useMemo(() => {
+    if (gabaritoAulas[aulaGabaritoAtivaId]) {
+      return gabaritoAulas[aulaGabaritoAtivaId].acertos;
+    }
+    return acertosMarcados;
+  }, [gabaritoAulas, aulaGabaritoAtivaId, acertosMarcados]);
+
+  // Obter erros da aula ativa
+  const errosAtuais = React.useMemo(() => {
+    if (gabaritoAulas[aulaGabaritoAtivaId]) {
+      return gabaritoAulas[aulaGabaritoAtivaId].erros;
+    }
+    return errosMarcados;
+  }, [gabaritoAulas, aulaGabaritoAtivaId, errosMarcados]);
+
   const handleToggleAcerto = (numeroQuestao: number) => {
+    const idAlvo = aulaGabaritoAtivaId;
+    setGabaritoAulas(prev => {
+      const atual = prev[idAlvo] || {
+        acertos: acertosMarcados,
+        erros: errosMarcados
+      };
+      let novosAcertos: number[];
+      if (atual.acertos.includes(numeroQuestao)) {
+        novosAcertos = atual.acertos.filter(n => n !== numeroQuestao);
+      } else {
+        novosAcertos = [...atual.acertos, numeroQuestao];
+      }
+      const updated = {
+        ...prev,
+        [idAlvo]: {
+          ...atual,
+          acertos: novosAcertos
+        }
+      };
+      return updated;
+    });
+
+    // Manter sincronizado se for a aula principal
     setAcertosMarcados(prev => {
       let next;
       if (prev.includes(numeroQuestao)) {
@@ -479,6 +595,29 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   };
 
   const handleToggleErro = (numeroQuestao: number) => {
+    const idAlvo = aulaGabaritoAtivaId;
+    setGabaritoAulas(prev => {
+      const atual = prev[idAlvo] || {
+        acertos: acertosMarcados,
+        erros: errosMarcados
+      };
+      let novosErros: number[];
+      if (atual.erros.includes(numeroQuestao)) {
+        novosErros = atual.erros.filter(n => n !== numeroQuestao);
+      } else {
+        novosErros = [...atual.erros, numeroQuestao];
+      }
+      const updated = {
+        ...prev,
+        [idAlvo]: {
+          ...atual,
+          erros: novosErros
+        }
+      };
+      return updated;
+    });
+
+    // Manter sincronizado se for a aula principal
     setErrosMarcados(prev => {
       let next;
       if (prev.includes(numeroQuestao)) {
@@ -491,12 +630,55 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     });
   };
 
+  const handleAdicionarAulaAoFoco = (idParaAdicionar: string) => {
+    if (!idParaAdicionar) return;
+    if (!aulasFocoIds.includes(idParaAdicionar)) {
+      setAulasFocoIds(prev => [...prev, idParaAdicionar]);
+    }
+    // Inicializar gabarito da nova aula se ainda não existir
+    setGabaritoAulas(prev => {
+      if (prev[idParaAdicionar]) return prev;
+      return {
+        ...prev,
+        [idParaAdicionar]: { acertos: [], erros: [] }
+      };
+    });
+    setAulaSelecionadaId(idParaAdicionar);
+  };
+
+  const handleRemoverAulaDoFoco = (idParaRemover: string) => {
+    if (aulasFocoIds.length <= 1) {
+      alert("A sessão de foco deve ter pelo menos uma aula vinculada.");
+      return;
+    }
+    const novas = aulasFocoIds.filter(id => id !== idParaRemover);
+    setAulasFocoIds(novas);
+    if (aulaSelecionadaId === idParaRemover) {
+      setAulaSelecionadaId(novas[0]);
+    }
+  };
+
   const handleClearGabarito = () => {
-    if (window.confirm("Deseja realmente limpar todas as marcações do gabarito?")) {
+    if (window.confirm(`Deseja limpar as marcações da aula ativa (${materiaAtiva?.aulas?.find(a => a.id === aulaGabaritoAtivaId)?.titulo || 'Aula'})?`)) {
+      setGabaritoAulas(prev => ({
+        ...prev,
+        [aulaGabaritoAtivaId]: { acertos: [], erros: [] }
+      }));
       setAcertosMarcados([]);
       setErrosMarcados([]);
       localStorage.removeItem('superestrategico_timer_correct_list');
       localStorage.removeItem('superestrategico_timer_wrong_list');
+    }
+  };
+
+  const handleClearTodosGabaritos = () => {
+    if (window.confirm("Deseja realmente limpar as marcações de TODAS as aulas deste bloco?")) {
+      setGabaritoAulas({});
+      setAcertosMarcados([]);
+      setErrosMarcados([]);
+      localStorage.removeItem('superestrategico_timer_correct_list');
+      localStorage.removeItem('superestrategico_timer_wrong_list');
+      localStorage.removeItem('superestrategico_timer_gabarito_multi_aulas');
     }
   };
 
@@ -1628,17 +1810,17 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
 
               </div>
 
-              {/* Linha 2: Gabarito de Exercícios (Empilhados Verticalmente Sem Rolagem) */}
+              {/* Linha 2: Gabarito de Exercícios Multi-Aulas (Empilhados Verticalmente Sem Rolagem) */}
               <div className="bg-[#0C0E12] border border-[#1E293B] rounded p-5 space-y-4" id="modal-row-gabarito">
                 
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                   <div>
                     <h4 className="text-sm font-display font-medium text-white flex items-center gap-2">
                       <CheckSquare size={16} className="text-[#C5A059]" />
-                      Gabarito em Tempo Real
+                      Gabarito em Tempo Real Multi-Aulas
                     </h4>
                     <p className="text-[11px] text-[#64748B]">
-                      Registre acertos/erros durante a resolução. Todos os botões visíveis de uma vez.
+                      Alterne entre as aulas estudadas nesta sessão e registre acertos/erros individualmente para cada uma.
                     </p>
                   </div>
                   
@@ -1654,13 +1836,143 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                       type="button"
                       onClick={handleClearGabarito}
                       className="bg-[#1E293B] hover:bg-[#1E293B]/80 text-[#94A3B8] hover:text-rose-400 px-2.5 py-1.5 rounded text-[10px] font-bold font-mono border border-[#1E293B] transition-colors cursor-pointer"
+                      title="Limpar gabarito da aula ativa"
                     >
-                      Limpar
+                      Limpar Aula
                     </button>
+                    {aulasFocoIds.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={handleClearTodosGabaritos}
+                        className="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-2.5 py-1.5 rounded text-[10px] font-bold font-mono border border-rose-500/30 transition-colors cursor-pointer"
+                        title="Limpar todas as aulas do bloco"
+                      >
+                        Limpar Todas
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                {/* Painéis de Acertos e Erros empilhados verticalmente e sem rolagem interna */}
+                {/* Seletor de Aulas Ativas no Modo Foco (Tabs / Chips Multi-Aulas) */}
+                <div className="bg-[#0F172A] p-2.5 rounded border border-[#1E293B] space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E293B]/50 pb-2">
+                    <span className="text-[10px] font-mono font-bold text-[#C5A059] uppercase tracking-wider flex items-center gap-1.5">
+                      <span>Aulas no Bloco:</span>
+                      <strong className="text-white">{aulasFocoIds.length}</strong>
+                    </span>
+
+                    {/* Dropdown para adicionar mais uma aula da matéria ao foco */}
+                    {(() => {
+                      const aulasNaoIncluidas = (materiaAtiva?.aulas || []).filter(a => !aulasFocoIds.includes(a.id));
+                      if (aulasNaoIncluidas.length === 0) return null;
+                      return (
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            defaultValue=""
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                handleAdicionarAulaAoFoco(e.target.value);
+                                e.target.value = '';
+                              }
+                            }}
+                            className="bg-[#1E293B] border border-[#2D3748] rounded px-2 py-1 text-[11px] text-[#E2E8F0] outline-none font-sans cursor-pointer focus:border-[#C5A059]"
+                          >
+                            <option value="" disabled>+ Incluir Outra Aula ao Foco...</option>
+                            {aulasNaoIncluidas.map(a => (
+                              <option key={a.id} value={a.id} className="bg-[#0F172A] text-white">
+                                + Aula {a.numero.toString().padStart(2, '0')} - {a.titulo}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Lista de Abas de Aulas com Placar de Cada Aula */}
+                  <div className="flex flex-wrap gap-2 pt-0.5">
+                    {aulasFocoIds.map((idAula) => {
+                      const aulaObj = materiaAtiva?.aulas?.find(a => a.id === idAula);
+                      const gab = gabaritoAulas[idAula] || {
+                        acertos: idAula === aulaSelecionadaId ? acertosMarcados : [],
+                        erros: idAula === aulaSelecionadaId ? errosMarcados : []
+                      };
+                      const totalQ = gab.acertos.length + gab.erros.length;
+                      const isAtiva = (idAula === aulaGabaritoAtivaId);
+
+                      return (
+                        <div
+                          key={`foco-tab-${idAula}`}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-mono transition-all ${
+                            isAtiva 
+                              ? 'bg-[#1E293B] border-[#C5A059] shadow-md shadow-[#C5A059]/10' 
+                              : 'bg-[#0C0E12]/80 border-[#1E293B] hover:border-[#64748B]/50 hover:bg-[#1E293B]/40'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setAulaSelecionadaId(idAula)}
+                            className="flex items-center gap-2 cursor-pointer text-left"
+                          >
+                            <span className={`w-2 h-2 rounded-full ${isAtiva ? 'bg-[#C5A059] animate-pulse' : 'bg-slate-600'}`} />
+                            <span className={`font-bold ${isAtiva ? 'text-white' : 'text-slate-300'}`}>
+                              Aula {aulaObj ? aulaObj.numero.toString().padStart(2, '0') : '??'}
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#0C0E12] border border-[#1E293B]">
+                              <strong className="text-emerald-400">+{gab.acertos.length}</strong> / <strong className="text-rose-400">-{gab.erros.length}</strong>
+                              {totalQ > 0 && <span className="text-slate-400 ml-1">({totalQ}Q)</span>}
+                            </span>
+                          </button>
+
+                          {aulasFocoIds.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoverAulaDoFoco(idAula);
+                              }}
+                              className="text-slate-500 hover:text-rose-400 p-0.5 rounded transition-colors"
+                              title="Remover aula deste bloco"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Resumo Consolidado do Bloco em Tempo Real */}
+                  {(() => {
+                    let somaQ = 0;
+                    let somaAc = 0;
+                    let somaErr = 0;
+                    aulasFocoIds.forEach(idAula => {
+                      const gab = gabaritoAulas[idAula] || {
+                        acertos: idAula === aulaSelecionadaId ? acertosMarcados : [],
+                        erros: idAula === aulaSelecionadaId ? errosMarcados : []
+                      };
+                      somaAc += gab.acertos.length;
+                      somaErr += gab.erros.length;
+                      somaQ += gab.acertos.length + gab.erros.length;
+                    });
+                    const pctGeral = somaQ > 0 ? Math.round((somaAc / somaQ) * 100) : 0;
+                    const aulaAtivaObj = materiaAtiva?.aulas?.find(a => a.id === aulaGabaritoAtivaId);
+
+                    return (
+                      <div className="flex flex-wrap items-center justify-between text-[11px] font-mono text-slate-400 pt-1 border-t border-[#1E293B]/40">
+                        <span>
+                          Preenchendo agora: <strong className="text-[#C5A059]">Aula {aulaAtivaObj?.numero.toString().padStart(2, '0')} - {aulaAtivaObj?.titulo}</strong>
+                        </span>
+                        <span>
+                          Total Geral da Sessão: <strong className="text-white">{somaQ} Q</strong> (<strong className="text-emerald-400">+{somaAc}</strong> / <strong className="text-rose-400">-{somaErr}</strong> {somaQ > 0 ? `· ${pctGeral}%` : ''})
+                        </span>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Painéis de Acertos e Erros empilhados verticalmente e sem rolagem interna para a Aula Ativa */}
                 <div className="flex flex-col gap-4">
                   
                   {/* Questões Certas */}
@@ -1668,16 +1980,16 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                     <div className="flex justify-between items-center border-b border-[#1E293B]/50 pb-2">
                       <span className="text-[11px] font-mono font-bold text-emerald-400 flex items-center gap-1.5">
                         <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                        Acertos
+                        Acertos (Aula {materiaAtiva?.aulas?.find(a => a.id === aulaGabaritoAtivaId)?.numero.toString().padStart(2, '0')})
                       </span>
                       <span className="font-mono text-xs font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded-full">
-                        {acertosMarcados.length}
+                        {acertosAtuais.length}
                       </span>
                     </div>
                     
                     <div className="flex flex-wrap gap-1.5 pr-1">
                       {Array.from({ length: limiteQuestoes }, (_, i) => i + 1).map(num => {
-                        const isActive = acertosMarcados.includes(num);
+                        const isActive = acertosAtuais.includes(num);
                         return (
                           <button
                             key={`acerto-modal-${num}`}
@@ -1701,16 +2013,16 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                     <div className="flex justify-between items-center border-b border-[#1E293B]/50 pb-2">
                       <span className="text-[11px] font-mono font-bold text-rose-400 flex items-center gap-1.5">
                         <span className="w-2 h-2 rounded-full bg-rose-500" />
-                        Erros
+                        Erros (Aula {materiaAtiva?.aulas?.find(a => a.id === aulaGabaritoAtivaId)?.numero.toString().padStart(2, '0')})
                       </span>
                       <span className="font-mono text-xs font-bold text-rose-400 bg-rose-500/10 border border-rose-500/25 px-2 py-0.5 rounded-full">
-                        {errosMarcados.length}
+                        {errosAtuais.length}
                       </span>
                     </div>
                     
                     <div className="flex flex-wrap gap-1.5 pr-1">
                       {Array.from({ length: limiteQuestoes }, (_, i) => i + 1).map(num => {
-                        const isActive = errosMarcados.includes(num);
+                        const isActive = errosAtuais.includes(num);
                         return (
                           <button
                             key={`erro-modal-${num}`}
