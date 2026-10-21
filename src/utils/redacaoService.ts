@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, getAuthenticatedClient } from '../lib/supabase';
 import { RedacaoCorrigida } from '../types';
 
 const LOCAL_STORAGE_KEY = 'superestrategico_redacoes_historico';
@@ -44,8 +44,10 @@ export async function obterHistoricoRedacoes(): Promise<RedacaoCorrigida[]> {
       return localItems; // Usuário offline ou não logado, retorna histórico local
     }
 
+    const client = session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
+
     // Busca redações do Supabase
-    const { data: dbItems, error } = await supabase
+    const { data: dbItems, error } = await client
       .from('redacoes_corrigidas')
       .select('*')
       .eq('user_id', user.id);
@@ -97,7 +99,7 @@ export async function obterHistoricoRedacoes(): Promise<RedacaoCorrigida[]> {
         correcao_raw: item.correcaoRaw
       }));
 
-      const { error: insertError } = await supabase
+      const { error: insertError } = await client
         .from('redacoes_corrigidas')
         .insert(inserts);
 
@@ -135,8 +137,9 @@ export async function adicionarRedacaoAoHistorico(
       const user = session?.user;
 
       if (user) {
+        const client = session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
         // Envia para o Supabase
-        const { error } = await supabase
+        const { error } = await client
           .from('redacoes_corrigidas')
           .insert({
             id: novaRedacao.id,
@@ -178,7 +181,8 @@ export async function removerRedacaoDoHistorico(id: string): Promise<void> {
       const user = session?.user;
 
       if (user) {
-        const { error } = await supabase
+        const client = session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
+        const { error } = await client
           .from('redacoes_corrigidas')
           .delete()
           .eq('id', id)

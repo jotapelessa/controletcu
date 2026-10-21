@@ -79,7 +79,9 @@ export default function App() {
       err.statusCode === 401 ||
       err.statusCode === 403 ||
       msg.includes('42501') ||
-      msg.toUpperCase().includes('PGRST301')
+      msg.toUpperCase().includes('PGRST301') ||
+      msg.toLowerCase().includes('row-level security') ||
+      msg.toLowerCase().includes('violates row-level security policy')
     );
   };
 
@@ -409,11 +411,13 @@ export default function App() {
   };
 
   // Função para enviar os dados atuais ao Supabase
-  const sendDadosToCloud = async (userId?: string): Promise<boolean> => {
+  const sendDadosToCloud = async (userId?: string, explicitSession?: any): Promise<boolean> => {
     if (!isSupabaseConfigured) return false;
 
     // 1. Obter e validar a sessão ativa antes de fazer qualquer chamada
-    const session = await getValidSession();
+    const session = (explicitSession && explicitSession.access_token && explicitSession.user?.id)
+      ? explicitSession
+      : await getValidSession();
     if (!session || !session.access_token || !session.user?.id) {
       console.warn('sendDadosToCloud cancelado: sessão não encontrada ou expirada no Supabase.');
       setSyncError({
@@ -616,7 +620,7 @@ export default function App() {
   };
 
   // Função para carregar e sincronizar dados da nuvem do Supabase
-  const syncDadosFromCloud = async (userId: string, force = false): Promise<boolean> => {
+  const syncDadosFromCloud = async (userId: string, force = false, explicitSession?: any): Promise<boolean> => {
     if (!isSupabaseConfigured) return false;
     if (isSyncingFromCloud.current && !force) return false;
     isSyncingFromCloud.current = true;
@@ -626,7 +630,9 @@ export default function App() {
       setSyncError(null);
 
       // 1. Garantir que uma sessão autenticada válida existe antes de consultar
-      const session = await getValidSession();
+      const session = (explicitSession && explicitSession.access_token && explicitSession.user?.id)
+        ? explicitSession
+        : await getValidSession();
       if (!session || !session.access_token || !session.user?.id) {
         console.warn('syncDadosFromCloud cancelado: sessão não encontrada ou expirada no Supabase.');
         setSyncError({
@@ -685,13 +691,7 @@ export default function App() {
       // Se ainda não há registro no Supabase, confirma sessão antes de semear a nuvem
       if (error && error.code === 'PGRST116') {
         console.info('Usuário sem registro no Supabase (PGRST116). Semeando dados iniciais para a nuvem...');
-        const validSession = await getValidSession();
-        if (validSession && validSession.access_token && validSession.user?.id) {
-          return await sendDadosToCloud(activeUserId);
-        } else {
-          console.warn('syncDadosFromCloud: semeamento cancelado por ausência de sessão válida.');
-          return false;
-        }
+        return await sendDadosToCloud(activeUserId, session);
       }
 
       if (error) {
@@ -699,11 +699,28 @@ export default function App() {
       }
 
       // Buscar logs de histórico normalizados ordenados por data decrescente
-      const { data: dbLogs, error: logsError } = await client
+      let { data: dbLogs, error: logsError } = await client
         .from('historico_logs')
         .select('*')
         .eq('user_id', activeUserId)
         .order('data', { ascending: false });
+
+      if (logsError && isAuthOrRlsError(logsError)) {
+        console.warn('syncDadosFromCloud: erro de RLS/autenticação ao carregar historico_logs, tentando renovar sessão...');
+        const { data: refreshedLogs, error: refreshLogsErr } = await supabase.auth.refreshSession();
+        if (!refreshLogsErr && refreshedLogs?.session && refreshedLogs.session.access_token && refreshedLogs.session.user?.id) {
+          setUserSession(refreshedLogs.session);
+          activeUserId = refreshedLogs.session.user.id;
+          client = getAuthenticatedClient(refreshedLogs.session.access_token);
+          const retryLogs = await client
+            .from('historico_logs')
+            .select('*')
+            .eq('user_id', activeUserId)
+            .order('data', { ascending: false });
+          dbLogs = retryLogs.data;
+          logsError = retryLogs.error;
+        }
+      }
 
       if (logsError) {
         console.warn('syncDadosFromCloud: aviso ao buscar historico_logs:', logsError);
@@ -1641,9 +1658,9 @@ export default function App() {
       setUserSession(session);
       setSyncError(null);
       if (!isSyncingFromCloud.current) {
-        syncDadosFromCloud(session.user.id);
+        syncDadosFromCloud(session.user.id, false, session);
       }
-      fetchAndSetProfile(session.user.id, session.user.email);
+      fetchAndSetProfile(session.user.id, session.user.email, session.access_token);
     }
   };
 

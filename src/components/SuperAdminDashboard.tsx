@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthenticatedClient } from '../lib/supabase';
 import { DEFAULT_CMS_CONTENT } from './Homepage';
 import CmsEditor from './CmsEditor';
 import { 
@@ -81,11 +81,17 @@ export default function SuperAdminDashboard({ currentAdminEmail }: SuperAdminDas
     }
   }, [adminTab, currentPage, searchQuery]);
 
+  const getClient = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
+  };
+
   // --- CARREGAR DADOS DO CMS ---
   const carregarCMS = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+      const client = await getClient();
+      const { data, error } = await client
         .from('cms_settings')
         .select('*')
         .eq('id', 'global')
@@ -115,7 +121,8 @@ export default function SuperAdminDashboard({ currentAdminEmail }: SuperAdminDas
       setFeedbackMsg('');
       setErrorMsg('');
 
-      const { error } = await supabase
+      const client = await getClient();
+      const { error } = await client
         .from('cms_settings')
         .upsert({
           id: 'global',
@@ -140,16 +147,17 @@ export default function SuperAdminDashboard({ currentAdminEmail }: SuperAdminDas
     try {
       setLoading(true);
       const startTime = Date.now();
+      const client = await getClient();
       
       // Contagem de usuários
-      const { count: usersCount, error: usersError } = await supabase
+      const { count: usersCount, error: usersError } = await client
         .from('profiles')
         .select('*', { count: 'exact', head: true });
 
       if (usersError) throw usersError;
 
       // Contagem de logs de estudo
-      const { count: logsCount, error: logsError } = await supabase
+      const { count: logsCount, error: logsError } = await client
         .from('historico_logs')
         .select('*', { count: 'exact', head: true });
 
@@ -179,7 +187,8 @@ export default function SuperAdminDashboard({ currentAdminEmail }: SuperAdminDas
       setSelectedUser(null);
       setSelectedUserStats(null);
       
-      let query = supabase
+      const client = await getClient();
+      let query = client
         .from('profiles')
         .select('*', { count: 'exact' });
         
@@ -218,7 +227,8 @@ export default function SuperAdminDashboard({ currentAdminEmail }: SuperAdminDas
       setFeedbackMsg('');
       setErrorMsg('');
 
-      const { error } = await supabase
+      const client = await getClient();
+      const { error } = await client
         .from('profiles')
         .update({ subscription_status: novoStatus, updated_at: new Date().toISOString() })
         .eq('id', userId);
@@ -248,7 +258,8 @@ export default function SuperAdminDashboard({ currentAdminEmail }: SuperAdminDas
       setSelectedUser(user);
       setSelectedUserStats(null);
 
-      const { data: logs, error } = await supabase
+      const client = await getClient();
+      const { data: logs, error } = await client
         .from('historico_logs')
         .select('duracao_minutos, questoes_resolvidas, questoes_acertadas, questoes_erradas')
         .eq('user_id', user.id);

@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, getAuthenticatedClient } from '../lib/supabase';
 
 /**
  * Salva o edital analisado no Supabase (se o usuário estiver logado)
@@ -12,7 +12,9 @@ export async function salvarEditalAnalisado(text: string, json: any): Promise<vo
 
     if (!user) return; // Não logado, mantém apenas local
 
-    const { error } = await supabase
+    const client = session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
+
+    const { error } = await client
       .from('edital_analisado')
       .upsert({
         user_id: user.id,
@@ -41,7 +43,9 @@ export async function obterEditalAnalisado(): Promise<{ editalText: string; edit
 
     if (!user) return null;
 
-    const { data, error } = await supabase
+    const client = session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
+
+    const { data, error } = await client
       .from('edital_analisado')
       .select('edital_text, edital_json')
       .eq('user_id', user.id)
@@ -78,7 +82,9 @@ export async function removerEditalAnalisado(): Promise<void> {
 
     if (!user) return;
 
-    const { error } = await supabase
+    const client = session?.access_token ? getAuthenticatedClient(session.access_token) : supabase;
+
+    const { error } = await client
       .from('edital_analisado')
       .delete()
       .eq('user_id', user.id);
