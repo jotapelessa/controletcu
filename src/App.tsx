@@ -2026,8 +2026,10 @@ export default function App() {
             {abaAtiva === 'planejamento' && materias.length > 0 && (
               <PlanejamentoSemanal
                 materias={materias}
+                ciclo={ciclo}
                 onAtualizarAula={handleAtualizarAula}
                 onAdicionarLog={handleAdicionarLogSessao}
+                onSalvarCiclo={handleSalvarCiclo}
               />
             )}
 

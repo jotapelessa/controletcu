@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Materia, StatusAula, Aula, LogSessao } from '../types';
+import { Materia, StatusAula, Aula, LogSessao, CicloEstudo } from '../types';
 import { 
   Calendar, 
   Clock, 
@@ -24,8 +24,10 @@ import {
 
 interface PlanejamentoProps {
   materias: Materia[];
+  ciclo?: CicloEstudo;
   onAtualizarAula: (materiaId: string, aulaAtualizada: Aula) => void;
   onAdicionarLog: (novoLog: Omit<LogSessao, 'id'>) => void;
+  onSalvarCiclo?: (novoCiclo: CicloEstudo) => void;
 }
 
 interface PlanejamentoConfig {
@@ -54,7 +56,7 @@ const DIAS_NOMES = [
   'Domingo'
 ];
 
-export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdicionarLog }: PlanejamentoProps) {
+export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, onAdicionarLog, onSalvarCiclo }: PlanejamentoProps) {
   // Configuração inicial com localStorage ou padrões inteligentes
   const [config, setConfig] = useState<PlanejamentoConfig>(() => {
     const saved = localStorage.getItem('superestrategico_planejamento_semanal');
@@ -264,6 +266,36 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
     mc.porcentagem = totalMinutosEfetivos > 0 ? (mc.minutosSemanais / totalMinutosEfetivos) * 100 : 0;
   });
 
+  // SINCRONIZAÇÃO AUTOMÁTICA CONTÍNUA COM O CICLO DE ESTUDOS
+  // Atualiza tempoMinutos de cada slot do ciclo com a meta diária calculada no cronograma
+  useEffect(() => {
+    if (!ciclo || !onSalvarCiclo || materiasComTempo.length === 0) return;
+
+    let houveAlteracao = false;
+    const novosItens = ciclo.itens.map(item => {
+      const mc = materiasComTempo.find(m => m.materia.id === item.materiaId);
+      if (!mc) return item;
+
+      // Meta diária calculada no cronograma arredondada (mínimo de 15 minutos)
+      const tempoAlvo = Math.max(15, Math.round(mc.minutosDiarios));
+      if (item.tempoMinutos !== tempoAlvo) {
+        houveAlteracao = true;
+        return {
+          ...item,
+          tempoMinutos: tempoAlvo
+        };
+      }
+      return item;
+    });
+
+    if (houveAlteracao) {
+      onSalvarCiclo({
+        ...ciclo,
+        itens: novosItens
+      });
+    }
+  }, [config.cargaHorariaSemanal, config.metaHorasDiaria, config.tipoMeta, config.diasAtivos, config.tipoDivisao, config.pesoMaterias, config.minutosCustomizados, ciclo?.id]);
+
   // Funções de controle de override manual
   const setMinutosCustom = (materiaId: string, valor: number) => {
     setConfig(prev => ({
@@ -373,7 +405,23 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       distribuicaoDias: novaDistribuicao
     }));
 
-    setMensagemSucesso("📆 Cronograma distribuído inteligentemente de acordo com os pesos e cargas semanais!");
+    // Sincronizar explicitamente os tempos no ciclo no momento da auto-distribuição
+    if (ciclo && onSalvarCiclo && materiasComTempo.length > 0) {
+      const novosItens = ciclo.itens.map(item => {
+        const mc = materiasComTempo.find(m => m.materia.id === item.materiaId);
+        if (!mc) return item;
+        return {
+          ...item,
+          tempoMinutos: Math.max(15, Math.round(mc.minutosDiarios))
+        };
+      });
+      onSalvarCiclo({
+        ...ciclo,
+        itens: novosItens
+      });
+    }
+
+    setMensagemSucesso("📆 Cronograma distribuído e metas diárias sincronizadas com o Ciclo de Estudos!");
     setTimeout(() => setMensagemSucesso(''), 5000);
   };
 
