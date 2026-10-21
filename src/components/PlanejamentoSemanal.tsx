@@ -289,24 +289,6 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       return;
     }
 
-    interface CupomSessao {
-      materiaId: string;
-      prioridade: number;
-    }
-
-    const sessoesPool: CupomSessao[] = [];
-    materiasComTempo.forEach(mc => {
-      const contSessoes = Math.ceil(mc.minutosSemanais / config.tamanhoBlocoMinutos);
-      for (let s = 0; s < contSessoes; s++) {
-        sessoesPool.push({
-          materiaId: mc.materia.id,
-          prioridade: mc.peso * 10 - s * 2
-        });
-      }
-    });
-
-    sessoesPool.sort((a, b) => b.prioridade - a.prioridade);
-
     const novaDistribuicao: { [diaIndex: number]: string[] } = {
       0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: []
     };
@@ -316,34 +298,75 @@ export default function PlanejamentoSemanal({ materias, onAtualizarAula, onAdici
       if (ativo) diasAtivosIndices.push(idx);
     });
 
-    let diaPoolIndice = 0;
-    sessoesPool.forEach(sessao => {
-      let diaEscolhido = -1;
-      for (let i = 0; i < diasAtivosIndices.length; i++) {
-        const testDia = diasAtivosIndices[(diaPoolIndice + i) % diasAtivosIndices.length];
-        if (!novaDistribuicao[testDia].includes(sessao.materiaId)) {
-          diaEscolhido = testDia;
-          break;
-        }
-      }
-
-      if (diaEscolhido === -1) {
-        diaEscolhido = diasAtivosIndices[diaPoolIndice % diasAtivosIndices.length];
-      }
-
-      novaDistribuicao[diaEscolhido].push(sessao.materiaId);
-      
-      const indexAtual = diasAtivosIndices.indexOf(diaEscolhido);
-      diaPoolIndice = (indexAtual + 1) % diasAtivosIndices.length;
-    });
-
-    // Limitar dias com o limite definido pelo usuário maxMateriasPorDia (padrão é 17)
     const limiteMaterias = config.maxMateriasPorDia || 17;
-    diasAtivosIndices.forEach(dia => {
-      if (novaDistribuicao[dia].length > limiteMaterias) {
-        novaDistribuicao[dia] = novaDistribuicao[dia].slice(0, limiteMaterias);
-      }
+
+    // Ordenar matérias por prioridade decrescente de peso/carga para estruturação visual consistente
+    const materiasOrdenadasPorPeso = [...materiasComTempo].sort((a, b) => {
+      if (b.peso !== a.peso) return b.peso - a.peso;
+      return b.minutosSemanais - a.minutosSemanais;
     });
+
+    // CASO 1: O limite diário configurado comporta todas as matérias selecionadas (ex: limite = 17)
+    // Garante que 100% das matérias ativas estejam presentes em TODOS os dias ativos da semana
+    if (limiteMaterias >= materiasSelecionadas.length) {
+      diasAtivosIndices.forEach(dia => {
+        novaDistribuicao[dia] = materiasOrdenadasPorPeso.map(mc => mc.materia.id);
+      });
+    } else {
+      // CASO 2: O limite diário é menor que o total de matérias (ex: limite = 4 matérias/dia para 17 matérias)
+      // Distribui de forma equilibrada sem repetição no mesmo dia, garantindo cotas de aparição proporcionais ao peso
+      const totalSlotsSemana = diasAtivosIndices.length * limiteMaterias;
+      const somaPesos = materiasOrdenadasPorPeso.reduce((s, mc) => s + (mc.peso || 3), 0);
+
+      interface ItemPool {
+        materiaId: string;
+        peso: number;
+        prioridade: number;
+      }
+
+      const pool: ItemPool[] = [];
+      materiasOrdenadasPorPeso.forEach(mc => {
+        // Cota de aparições na semana com base no peso (mínimo 1 aparição)
+        const cota = Math.max(1, Math.min(diasAtivosIndices.length, Math.round(((mc.peso || 3) / (somaPesos || 1)) * totalSlotsSemana)));
+        for (let i = 0; i < cota; i++) {
+          pool.push({
+            materiaId: mc.materia.id,
+            peso: mc.peso,
+            prioridade: mc.peso * 10 - i * 2
+          });
+        }
+      });
+
+      pool.sort((a, b) => b.prioridade - a.prioridade);
+
+      // Distribuir slots evitando matérias repetidas no mesmo dia
+      pool.forEach(item => {
+        let melhorDia = -1;
+        let menorQtd = Infinity;
+        for (const dia of diasAtivosIndices) {
+          if (!novaDistribuicao[dia].includes(item.materiaId) && novaDistribuicao[dia].length < limiteMaterias) {
+            if (novaDistribuicao[dia].length < menorQtd) {
+              menorQtd = novaDistribuicao[dia].length;
+              melhorDia = dia;
+            }
+          }
+        }
+        if (melhorDia !== -1) {
+          novaDistribuicao[melhorDia].push(item.materiaId);
+        }
+      });
+
+      // Preencher eventuais lacunas restantes até o limite com as matérias prioritárias ainda ausentes no dia
+      diasAtivosIndices.forEach(dia => {
+        if (novaDistribuicao[dia].length < limiteMaterias) {
+          for (const mc of materiasOrdenadasPorPeso) {
+            if (!novaDistribuicao[dia].includes(mc.materia.id) && novaDistribuicao[dia].length < limiteMaterias) {
+              novaDistribuicao[dia].push(mc.materia.id);
+            }
+          }
+        }
+      });
+    }
 
     setConfig(prev => ({
       ...prev,
