@@ -144,28 +144,34 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
   const [editandoMinutos, setEditandoMinutos] = useState<{ [materiaId: string]: string }>({});
   const [flashOK, setFlashOK] = useState<{ [materiaId: string]: boolean }>({});
 
-  // 1. CÁLCULO GERAL DO TEMPO DISPONÍVEL
-  const totalDiasEstudo = config.diasAtivos.filter(Boolean).length;
+  // 1. CÁLCULO GERAL DO TEMPO DISPONÍVEL (BLINDADO CONTRA NaN)
+  const totalDiasEstudo = Math.max(1, config.diasAtivos.filter(Boolean).length);
   
-  // Garantir sincronização perfeita do buffer tempoPorDia com os dias ativos
+  // Carga semanal validada com fallback seguro (119h)
+  const cargaSemanalSegura = (Number.isFinite(config.cargaHorariaSemanal) && config.cargaHorariaSemanal > 0)
+    ? config.cargaHorariaSemanal
+    : 119;
+
+  // Garantir sincronização perfeita do buffer tempoPorDia com os dias ativos sem valores NaN
   const tempoPorDiaCorreto = { ...(config.tempoPorDia || {}) };
   let totalMinutosSemanaisCalculados = 0;
+  const minutosPorDiaPadrao = Math.round((cargaSemanalSegura * 60) / totalDiasEstudo);
   
   config.diasAtivos.forEach((ativo, idx) => {
     if (!ativo) {
       tempoPorDiaCorreto[idx] = 0;
     } else {
-      if (tempoPorDiaCorreto[idx] === undefined || tempoPorDiaCorreto[idx] === 0) {
-        const defaultMinutos = config.tipoMeta === 'semanal'
-          ? Math.round((config.cargaHorariaSemanal * 60) / (totalDiasEstudo || 1))
-          : Math.round(config.metaHorasDiaria * 60);
-        tempoPorDiaCorreto[idx] = defaultMinutos || 300;
+      const val = tempoPorDiaCorreto[idx];
+      if (!Number.isFinite(val) || val <= 0) {
+        tempoPorDiaCorreto[idx] = minutosPorDiaPadrao;
       }
       totalMinutosSemanaisCalculados += tempoPorDiaCorreto[idx];
     }
   });
 
-  const minutosSemanaisTotais = totalMinutosSemanaisCalculados;
+  const minutosSemanaisTotais = Number.isFinite(totalMinutosSemanaisCalculados) && totalMinutosSemanaisCalculados > 0
+    ? totalMinutosSemanaisCalculados
+    : cargaSemanalSegura * 60;
   const horasSemanaisCalculadas = minutosSemanaisTotais / 60;
   const horasDiariasCalculadas = totalDiasEstudo > 0 ? (horasSemanaisCalculadas / totalDiasEstudo) : 0;
 
@@ -182,7 +188,7 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
     isCustom: boolean; // override manual ativo?
   }
 
-  // Calcula os minutos automáticos (sem overrides)
+  // Calcula os minutos automáticos (sem overrides) com proteção total contra divisão por zero ou NaN
   let materiasComTempoAuto: Omit<MateriaCalculada, 'isCustom'>[] = [];
 
   if (materiasSelecionadas.length > 0 && minutosSemanaisTotais > 0) {
@@ -190,35 +196,40 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
       const minutosPorMateria = minutosSemanaisTotais / materiasSelecionadas.length;
       materiasComTempoAuto = materiasSelecionadas.map(m => ({
         materia: m,
-        minutosSemanais: minutosPorMateria,
-        minutosDiarios: minutosPorMateria / (totalDiasEstudo || 1),
+        minutosSemanais: Math.round(minutosPorMateria),
+        minutosDiarios: Math.round(minutosPorMateria / totalDiasEstudo),
         porcentagem: 100 / materiasSelecionadas.length,
-        peso: config.pesoMaterias[m.id] || 3,
-        sessoesSemanais: Math.max(1, Math.round(minutosPorMateria / config.tamanhoBlocoMinutos))
+        peso: Number.isFinite(config.pesoMaterias[m.id]) ? config.pesoMaterias[m.id] : 3,
+        sessoesSemanais: Math.max(1, Math.round(minutosPorMateria / (config.tamanhoBlocoMinutos || 90)))
       }));
     } else if (config.tipoDivisao === 'peso') {
-      const somaPesos = materiasSelecionadas.reduce((acc, m) => acc + (config.pesoMaterias[m.id] || 3), 0);
+      const somaPesosCalculada = materiasSelecionadas.reduce((acc, m) => acc + (Number.isFinite(config.pesoMaterias[m.id]) ? config.pesoMaterias[m.id] : 3), 0);
+      const somaPesos = somaPesosCalculada > 0 ? somaPesosCalculada : materiasSelecionadas.length * 3;
+
       materiasComTempoAuto = materiasSelecionadas.map(m => {
-        const peso = config.pesoMaterias[m.id] || 3;
-        const proporcao = peso / (somaPesos || 1);
+        const peso = Number.isFinite(config.pesoMaterias[m.id]) ? config.pesoMaterias[m.id] : 3;
+        const proporcao = peso / somaPesos;
         const minutosMateria = minutosSemanaisTotais * proporcao;
+        const minDia = minutosMateria / totalDiasEstudo;
         return ({
           materia: m,
-          minutosSemanais: minutosMateria,
-          minutosDiarios: minutosMateria / (totalDiasEstudo || 1),
+          minutosSemanais: Math.round(minutosMateria),
+          minutosDiarios: Math.round(minDia),
           porcentagem: proporcao * 100,
           peso,
-          sessoesSemanais: Math.max(1, Math.round(minutosMateria / config.tamanhoBlocoMinutos))
+          sessoesSemanais: Math.max(1, Math.round(minutosMateria / (config.tamanhoBlocoMinutos || 90)))
         });
       });
     } else { // Por Blocos de tempo fixos
-      const totalBlocos = Math.floor(minutosSemanaisTotais / config.tamanhoBlocoMinutos);
-      const somaPesos = materiasSelecionadas.reduce((acc, m) => acc + (config.pesoMaterias[m.id] || 3), 0);
+      const tamanhoBloco = config.tamanhoBlocoMinutos || 90;
+      const totalBlocos = Math.max(1, Math.floor(minutosSemanaisTotais / tamanhoBloco));
+      const somaPesosCalculada = materiasSelecionadas.reduce((acc, m) => acc + (Number.isFinite(config.pesoMaterias[m.id]) ? config.pesoMaterias[m.id] : 3), 0);
+      const somaPesos = somaPesosCalculada > 0 ? somaPesosCalculada : materiasSelecionadas.length * 3;
       
       let blocosAtribuidos = 0;
       const blocosBrutos = materiasSelecionadas.map(m => {
-        const peso = config.pesoMaterias[m.id] || 3;
-        const proporcao = peso / (somaPesos || 1);
+        const peso = Number.isFinite(config.pesoMaterias[m.id]) ? config.pesoMaterias[m.id] : 3;
+        const proporcao = peso / somaPesos;
         const blocosIdeal = totalBlocos * proporcao;
         const blocosArredondado = Math.floor(blocosIdeal);
         blocosAtribuidos += blocosArredondado;
@@ -233,14 +244,14 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
       }
 
       materiasComTempoAuto = blocosBrutos.map(item => {
-        const minsMateria = item.real * config.tamanhoBlocoMinutos;
+        const minsMateria = item.real * tamanhoBloco;
         return ({
           materia: item.m,
           minutosSemanais: minsMateria,
-          minutosDiarios: minsMateria / (totalDiasEstudo || 1),
+          minutosDiarios: Math.round(minsMateria / totalDiasEstudo),
           porcentagem: (minsMateria / (minutosSemanaisTotais || 1)) * 100,
           peso: item.peso,
-          sessoesSemanais: item.real
+          sessoesSemanais: Math.max(1, item.real)
         });
       });
     }
@@ -250,23 +261,24 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
   const minutosCustomizados = config.minutosCustomizados || {};
   const materiasComTempo: MateriaCalculada[] = materiasComTempoAuto.map(mc => {
     const custom = minutosCustomizados[mc.materia.id];
-    const mins = (custom !== undefined && custom >= 0) ? custom : mc.minutosSemanais;
+    const mins = (custom !== undefined && Number.isFinite(custom) && custom >= 0) ? custom : mc.minutosSemanais;
+    const minsDia = Number.isFinite(mins) ? mins / totalDiasEstudo : mc.minutosDiarios;
     return {
       ...mc,
-      minutosSemanais: mins,
-      minutosDiarios: mins / (totalDiasEstudo || 1),
+      minutosSemanais: Number.isFinite(mins) ? mins : mc.minutosSemanais,
+      minutosDiarios: Number.isFinite(minsDia) ? minsDia : mc.minutosDiarios,
       porcentagem: mins, // Será recalculado abaixo com base no total real
       isCustom: custom !== undefined
     };
   });
 
   // Recalcular porcentagens com base no total efetivo (com overrides)
-  const totalMinutosEfetivos = materiasComTempo.reduce((s, mc) => s + mc.minutosSemanais, 0);
+  const totalMinutosEfetivos = materiasComTempo.reduce((s, mc) => s + (Number.isFinite(mc.minutosSemanais) ? mc.minutosSemanais : 0), 0);
   materiasComTempo.forEach(mc => {
     mc.porcentagem = totalMinutosEfetivos > 0 ? (mc.minutosSemanais / totalMinutosEfetivos) * 100 : 0;
   });
 
-  // SINCRONIZAÇÃO AUTOMÁTICA CONTÍNUA COM O CICLO DE ESTUDOS
+  // SINCRONIZAÇÃO AUTOMÁTICA CONTÍNUA COM O CICLO DE ESTUDOS (100% BLINDADA CONTRA NaN)
   // Atualiza tempoMinutos de cada slot do ciclo com a meta diária calculada no cronograma
   const sincronizarMetasComCiclo = (cicloBase?: CicloEstudo | null) => {
     let targetCiclo = cicloBase || ciclo;
@@ -283,11 +295,20 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
     let houveAlteracao = false;
     const novosItens = targetCiclo.itens.map(item => {
       const mc = materiasComTempo.find(m => m.materia.id === item.materiaId);
-      if (!mc) return item;
+      
+      // Fallback seguro baseado no peso da disciplina se mc não for encontrado ou tiver valor inválido
+      let minutosCalculados = mc?.minutosDiarios;
+      if (!Number.isFinite(minutosCalculados) || (minutosCalculados || 0) <= 0) {
+        const peso = (config.pesoMaterias && Number.isFinite(config.pesoMaterias[item.materiaId])) ? config.pesoMaterias[item.materiaId] : 3;
+        minutosCalculados = Math.round((peso / 61) * ((cargaSemanalSegura * 60) / totalDiasEstudo));
+      }
 
-      // Meta diária calculada no cronograma arredondada (mínimo de 15 minutos)
-      const tempoAlvo = Math.max(15, Math.round(mc.minutosDiarios));
-      if (item.tempoMinutos !== tempoAlvo) {
+      // Meta diária calculada no cronograma arredondada (mínimo de 15 minutos, garantia de inteiro finito)
+      const tempoAlvo = (Number.isFinite(minutosCalculados) && (minutosCalculados || 0) >= 15)
+        ? Math.round(minutosCalculados!)
+        : 60;
+
+      if (item.tempoMinutos !== tempoAlvo || !Number.isFinite(item.tempoMinutos)) {
         houveAlteracao = true;
         return {
           ...item,
@@ -501,16 +522,19 @@ export default function PlanejamentoSemanal({ materias, ciclo, onAtualizarAula, 
     if (!config.diasAtivos[diaIdx]) return 0;
     if (!materiasDiaIds.includes(materiaId)) return 0;
     
-    const tempoDiaMinutos = tempoPorDiaCorreto[diaIdx] || 0;
-    if (tempoDiaMinutos <= 0) return 0;
+    const tempoDiaMinutos = (Number.isFinite(tempoPorDiaCorreto[diaIdx]) && tempoPorDiaCorreto[diaIdx] > 0)
+      ? tempoPorDiaCorreto[diaIdx]
+      : Math.round((cargaSemanalSegura * 60) / totalDiasEstudo);
 
     if (config.tipoDivisao === 'igual') {
-      return tempoDiaMinutos / (materiasDiaIds.length || 1);
+      const divisor = materiasDiaIds.length || 1;
+      return Math.round(tempoDiaMinutos / divisor);
     } else {
       // Para 'peso' e 'blocos', alocamos proporcionalmente de acordo com o peso de cada disciplina no dia
-      const pesoMateria = config.pesoMaterias[materiaId] || 3;
-      const somaPesosDia = materiasDiaIds.reduce((acc, id) => acc + (config.pesoMaterias[id] || 3), 0);
-      return (pesoMateria / (somaPesosDia || 1)) * tempoDiaMinutos;
+      const pesoMateria = Number.isFinite(config.pesoMaterias[materiaId]) ? config.pesoMaterias[materiaId] : 3;
+      const somaPesosDia = materiasDiaIds.reduce((acc, id) => acc + (Number.isFinite(config.pesoMaterias[id]) ? config.pesoMaterias[id] : 3), 0) || 1;
+      const minCalculados = (pesoMateria / somaPesosDia) * tempoDiaMinutos;
+      return Number.isFinite(minCalculados) ? Math.round(minCalculados) : 60;
     }
   };
 

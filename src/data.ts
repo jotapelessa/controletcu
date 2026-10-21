@@ -551,9 +551,10 @@ export function ajustarEMesclarCiclo(userCiclo: CicloEstudo | null | undefined, 
       return CICLO_PADRAO;
     }
 
-    // Reordenar os índices Ordem
+    // Reordenar os índices Ordem e sanitizar tempoMinutos contra NaN
     validItens = validItens.map((it, idx) => ({
       ...it,
+      tempoMinutos: (Number.isFinite(it.tempoMinutos) && it.tempoMinutos > 0) ? Math.round(it.tempoMinutos) : 90,
       Ordem: idx + 1
     }));
 

@@ -72,8 +72,11 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
     localStorage.setItem('superestrategico_timer_modal_open', mostrarModalFoco.toString());
   }, [mostrarModalFoco]);
   
-  // Timer de contagem regressiva baseado nos minutos do Ciclo (geralmente 90)
-  const targetMinutos = currentSlot ? currentSlot.tempoMinutos : 90;
+  // Timer de contagem regressiva baseado nos minutos do Ciclo (geralmente 90, com sanitização total contra NaN)
+  const rawTargetMinutos = currentSlot ? currentSlot.tempoMinutos : 90;
+  const targetMinutos = (Number.isFinite(rawTargetMinutos) && rawTargetMinutos > 0)
+    ? Math.round(rawTargetMinutos)
+    : 90;
 
   // Atualizar tempoMinutosCustom e segundos do temporizador se não estiver rodando quando a meta mudar
   useEffect(() => {
@@ -598,6 +601,9 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                 {ciclo.itens.map((item, index) => {
                   const itemMat = materias.find(m => m.id === item.materiaId) || materias[0];
                   const isAtivo = index === ciclo.itemAtualIndice;
+                  const itemMinutosSeguros = (Number.isFinite(item.tempoMinutos) && item.tempoMinutos > 0)
+                    ? Math.round(item.tempoMinutos)
+                    : 90;
 
                   return (
                     <div 
@@ -613,7 +619,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                         </span>
                         <div>
                           <h5 className="text-xs font-bold text-white">{itemMat?.nome || 'Matéria'}</h5>
-                          <span className="text-[10px] text-[#64748B] font-mono">Duração: {item.tempoMinutos}m ({Math.round(item.tempoMinutos / 60)}h)</span>
+                          <span className="text-[10px] text-[#64748B] font-mono">Duração: {itemMinutosSeguros}m ({Math.round(itemMinutosSeguros / 60)}h)</span>
                         </div>
                       </div>
                       
