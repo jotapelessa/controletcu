@@ -878,19 +878,66 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
               ) : (
                 <div className="space-y-6" id="materia-cycle-logs-present">
                   
+                  {/* Visão de Cobertura do Ciclo Atual e Páginas */}
+                  {(() => {
+                    const totalAulas = materiaAnaliticaObjeto.aulas.length;
+                    const aulasEstudadas = materiaAnaliticaObjeto.aulas.filter(a => {
+                      const count = logsMateriaAnalitica.filter(l => l.aulaId === a.id).length;
+                      return count > 0 || a.status === StatusAula.Concluido || (a.progressoPercentual !== undefined && a.progressoPercentual > 0);
+                    }).length;
+                    const aulasConcluidas = materiaAnaliticaObjeto.aulas.filter(a => a.status === StatusAula.Concluido).length;
+                    const pctCobertura = totalAulas > 0 ? Math.round((aulasEstudadas / totalAulas) * 100) : 0;
+                    const totalPaginasLidas = materiaAnaliticaObjeto.aulas.reduce((acc, a) => acc + (a.paginasLidas || 0), 0);
+                    const totalPaginas = materiaAnaliticaObjeto.aulas.reduce((acc, a) => acc + (a.paginasTotais || 0), 0);
+
+                    return (
+                      <div className="bg-[#0C0E12] border border-[#1E293B] p-4 rounded space-y-2">
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="text-[#94A3B8] font-bold flex items-center gap-1.5">
+                            <Layers size={13} className="text-[#C5A059]" /> Cobertura do Ciclo Nesta Matéria
+                          </span>
+                          <span className="text-white font-bold">
+                            {aulasEstudadas}/{totalAulas} aulas ({pctCobertura}%) · <span className="text-emerald-400">{aulasConcluidas} concluídas</span>
+                          </span>
+                        </div>
+                        <div className="w-full bg-[#1E293B] rounded-full h-2 overflow-hidden">
+                          <div 
+                            className="bg-gradient-to-r from-[#C5A059] to-emerald-400 h-2 rounded-full transition-all duration-500"
+                            style={{ width: `${Math.min(100, Math.max(4, pctCobertura))}%` }}
+                          />
+                        </div>
+                        {totalPaginas > 0 && (
+                          <div className="flex items-center justify-between text-[11px] font-mono text-[#64748B] pt-0.5">
+                            <span>Páginas Lidas no Material:</span>
+                            <span className="text-slate-300 font-bold">
+                              {totalPaginasLidas} / {totalPaginas} págs ({Math.round((totalPaginasLidas / totalPaginas) * 100)}%)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   {/* Ciclos de Estudo por Aula */}
                   <div className="bg-[#0C0E12] border border-[#1E293B] p-4 rounded">
                     <h5 className="text-[10px] font-mono font-bold text-[#64748B] mb-3 uppercase tracking-wide">Aproveitamento e Foco por Aula:</h5>
-                    <div className="flex flex-wrap gap-1.5 max-h-[120px] overflow-y-auto pr-1 custom-scrollbar">
+                    <div className="flex flex-wrap gap-1.5 max-h-[140px] overflow-y-auto pr-1 custom-scrollbar">
                       {materiaAnaliticaObjeto.aulas.map(aula => {
                         const contagemAula = logsMateriaAnalitica.filter(l => l.aulaId === aula.id).length;
                         const qResolv = aula.questoesResolvidas || 0;
                         const qAcert = aula.questoesAcertadas || 0;
                         const qPct = qResolv > 0 ? Math.round((qAcert / qResolv) * 100) : 0;
                         const target = obterMetaMateria(materiaAnaliticaObjeto);
+                        const isConcluida = aula.status === StatusAula.Concluido;
+                        const temPaginas = aula.paginasTotais && aula.paginasTotais > 0;
+                        const progressoLeitura = isConcluida 
+                          ? '100%' 
+                          : (aula.progressoPercentual !== undefined ? `${aula.progressoPercentual}%` : (temPaginas && aula.paginasLidas ? `${Math.round((aula.paginasLidas / (aula.paginasTotais || 1)) * 100)}%` : null));
 
                         let performanceStyle = 'bg-[#1E293B]/20 border-[#1E293B] text-[#64748B]';
-                        if (qResolv > 0) {
+                        if (isConcluida) {
+                          performanceStyle = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-bold';
+                        } else if (qResolv > 0) {
                           if (qPct >= target) {
                             performanceStyle = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-bold';
                           } else if (qPct >= 80) {
@@ -898,7 +945,7 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                           } else {
                             performanceStyle = 'bg-rose-500/10 border-rose-500/30 text-rose-400 font-bold';
                           }
-                        } else if (contagemAula > 0) {
+                        } else if (contagemAula > 0 || progressoLeitura) {
                           performanceStyle = 'bg-[#1E293B]/40 border-[#2D3748] text-slate-300';
                         }
 
@@ -906,11 +953,15 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
                           <div 
                             key={aula.id} 
                             className={`text-[11px] font-mono px-2.5 py-1 rounded border flex items-center gap-1.5 transition-all ${performanceStyle}`}
-                            title={`${aula.titulo}: ${contagemAula}x estudada | ${qResolv} Q (${qPct}% acertos)`}
+                            title={`${aula.titulo}: ${contagemAula}x estudada | ${qResolv} Q (${qPct}% acertos)${temPaginas ? ` | Pág. ${aula.paginasLidas || 0}/${aula.paginasTotais}` : ''}`}
                           >
                             <span className="font-bold">A{aula.numero.toString().padStart(2, '0')}</span>
                             <span className="w-1 h-1 rounded-full bg-slate-700" />
-                            <span className="font-semibold">{qResolv > 0 ? `${qPct}% (${qResolv}Q)` : `${contagemAula}x`}</span>
+                            <span className="font-semibold">
+                              {qResolv > 0 
+                                ? `${qPct}% (${qResolv}Q)` 
+                                : (progressoLeitura ? `${progressoLeitura} lido` : `${contagemAula}x`)}
+                            </span>
                           </div>
                         );
                       })}
