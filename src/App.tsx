@@ -11,7 +11,7 @@ import IADiagnostico from './components/IADiagnostico';
 import DadosEBackup from './components/DadosEBackup';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shield, BookOpen, Clock, Calendar, Award, Sparkles, LogOut, CheckCircle, Flame, User, ListCollapse, ShieldAlert, RefreshCw } from 'lucide-react';
-import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { supabase, isSupabaseConfigured, getAuthenticatedClient } from './lib/supabase';
 import SupabaseAuthModal from './components/SupabaseAuthModal';
 import Homepage, { DEFAULT_CMS_CONTENT } from './components/Homepage';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
@@ -155,10 +155,17 @@ export default function App() {
     }
   };
 
-  const fetchAndSetProfile = async (userId: string, userEmail?: string) => {
+  const fetchAndSetProfile = async (userId: string, userEmail?: string, accessToken?: string) => {
     if (!isSupabaseConfigured) return;
     try {
-      const { data: profile, error } = await supabase
+      let token = accessToken;
+      if (!token) {
+        const session = await getValidSession();
+        token = session?.access_token;
+      }
+      const client = token ? getAuthenticatedClient(token) : supabase;
+
+      const { data: profile, error } = await client
         .from('profiles')
         .select('*')
         .eq('id', userId)
@@ -172,7 +179,7 @@ export default function App() {
         setUserProfile(profile);
         // Atualizar last_login de forma assíncrona (não bloqueante)
         Promise.resolve(
-          supabase
+          client
             .from('profiles')
             .update({ last_login: new Date().toISOString() })
             .eq('id', userId)
@@ -182,7 +189,7 @@ export default function App() {
 
       // Perfil não encontrado: tentar criar perfil manualmente caso a trigger de auth atrase
       const emailVal = userEmail || '';
-      const { data: newProfile, error: insertError } = await supabase
+      const { data: newProfile, error: insertError } = await client
         .from('profiles')
         .insert({ 
           id: userId, 
@@ -248,7 +255,7 @@ export default function App() {
           if (!isSyncingFromCloud.current) {
             syncDadosFromCloud(session.user.id);
           }
-          fetchAndSetProfile(session.user.id, session.user.email);
+          fetchAndSetProfile(session.user.id, session.user.email, session.access_token);
         }
       });
 
@@ -262,7 +269,7 @@ export default function App() {
             } else {
               setUserSession(session);
               setShowAuthModal(false);
-              fetchAndSetProfile(session.user.id, session.user.email);
+              fetchAndSetProfile(session.user.id, session.user.email, session.access_token);
             }
           }
           return;
@@ -290,7 +297,7 @@ export default function App() {
             if (!isSyncingFromCloud.current) {
               syncDadosFromCloud(session.user.id);
             }
-            fetchAndSetProfile(session.user.id, session.user.email);
+            fetchAndSetProfile(session.user.id, session.user.email, session.access_token);
           }
         }
       });
@@ -417,6 +424,7 @@ export default function App() {
     }
 
     let activeUserId = session.user.id;
+    let client = getAuthenticatedClient(session.access_token);
 
     try {
       setIsSyncingCloud(true);
@@ -460,7 +468,7 @@ export default function App() {
         configuracoes
       };
 
-      let { data: upsertData, error } = await supabase
+      let { data: upsertData, error } = await client
         .from('user_data_sync')
         .upsert(payload, { onConflict: 'user_id' })
         .select('updated_at')
@@ -473,7 +481,8 @@ export default function App() {
         if (!refreshErr && refreshed?.session && refreshed.session.access_token && refreshed.session.user?.id) {
           setUserSession(refreshed.session);
           activeUserId = refreshed.session.user.id;
-          const retry = await supabase
+          client = getAuthenticatedClient(refreshed.session.access_token);
+          const retry = await client
             .from('user_data_sync')
             .upsert({ ...payload, user_id: activeUserId }, { onConflict: 'user_id' })
             .select('updated_at')
@@ -534,7 +543,7 @@ export default function App() {
           };
         });
 
-        let { error: logsError } = await supabase
+        let { error: logsError } = await client
           .from('historico_logs')
           .upsert(logsPayload, { onConflict: 'id' });
 
@@ -544,7 +553,8 @@ export default function App() {
           if (!refreshLogsErr && refreshedLogs?.session?.access_token && refreshedLogs?.session?.user?.id) {
             setUserSession(refreshedLogs.session);
             activeUserId = refreshedLogs.session.user.id;
-            const retryLogs = await supabase
+            client = getAuthenticatedClient(refreshedLogs.session.access_token);
+            const retryLogs = await client
               .from('historico_logs')
               .upsert(logsPayload.map(lp => ({ ...lp, user_id: activeUserId })), { onConflict: 'id' });
             logsError = retryLogs.error;
@@ -627,9 +637,10 @@ export default function App() {
       }
 
       let activeUserId = session.user.id;
+      let client = getAuthenticatedClient(session.access_token);
       
       // Buscar dados de configurações do usuário
-      let { data, error } = await supabase
+      let { data, error } = await client
         .from('user_data_sync')
         .select('*')
         .eq('user_id', activeUserId)
@@ -642,7 +653,8 @@ export default function App() {
         if (!refreshErr && refreshed?.session && refreshed.session.access_token && refreshed.session.user?.id) {
           setUserSession(refreshed.session);
           activeUserId = refreshed.session.user.id;
-          const retry = await supabase
+          client = getAuthenticatedClient(refreshed.session.access_token);
+          const retry = await client
             .from('user_data_sync')
             .select('*')
             .eq('user_id', activeUserId)
@@ -687,7 +699,7 @@ export default function App() {
       }
 
       // Buscar logs de histórico normalizados ordenados por data decrescente
-      const { data: dbLogs, error: logsError } = await supabase
+      const { data: dbLogs, error: logsError } = await client
         .from('historico_logs')
         .select('*')
         .eq('user_id', activeUserId)
@@ -1193,11 +1205,12 @@ export default function App() {
     const cleanMaterias = JSON.parse(JSON.stringify(MATERIAS_PADRAO));
     const cleanCiclo = JSON.parse(JSON.stringify(CICLO_PADRAO));
 
-    if (isSupabaseConfigured && session?.user?.id) {
+    if (isSupabaseConfigured && session?.user?.id && session?.access_token) {
       activeUserId = session.user.id;
+      let client = getAuthenticatedClient(session.access_token);
 
       // 1. Deletar todos os registros de historico_logs deste usuário
-      let { error: delErr } = await supabase
+      let { error: delErr } = await client
         .from('historico_logs')
         .delete()
         .eq('user_id', activeUserId)
@@ -1206,11 +1219,12 @@ export default function App() {
       if (delErr && isAuthOrRlsError(delErr)) {
         console.warn('Erro de RLS/Auth ao deletar historico_logs no reset geral, tentando renovar sessão...');
         const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
-        if (!refErr && refreshed?.session?.user?.id) {
+        if (!refErr && refreshed?.session?.user?.id && refreshed?.session?.access_token) {
           session = refreshed.session;
           setUserSession(session);
           activeUserId = session.user.id;
-          const retry = await supabase
+          client = getAuthenticatedClient(session.access_token);
+          const retry = await client
             .from('historico_logs')
             .delete()
             .eq('user_id', activeUserId)
@@ -1229,7 +1243,7 @@ export default function App() {
       }
 
       // 2. Upsert dados limpos na tabela user_data_sync (configurações limpas e planejamento null)
-      let { data: upsertData, error: syncErr } = await supabase
+      let { data: upsertData, error: syncErr } = await client
         .from('user_data_sync')
         .upsert({
           user_id: activeUserId,
@@ -1248,11 +1262,12 @@ export default function App() {
       if (syncErr && isAuthOrRlsError(syncErr)) {
         console.warn('Erro de RLS/Auth ao atualizar user_data_sync no reset geral, tentando renovar sessão...');
         const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
-        if (!refErr && refreshed?.session?.user?.id) {
+        if (!refErr && refreshed?.session?.user?.id && refreshed?.session?.access_token) {
           session = refreshed.session;
           setUserSession(session);
           activeUserId = session.user.id;
-          const retry = await supabase
+          client = getAuthenticatedClient(session.access_token);
+          const retry = await client
             .from('user_data_sync')
             .upsert({
               user_id: activeUserId,
@@ -1386,11 +1401,12 @@ export default function App() {
     localStorage.removeItem('superestrategico_timer_hora_fim');
     localStorage.removeItem('superestrategico_ia_diagnostico_recente');
 
-    if (isSupabaseConfigured && session?.user?.id) {
+    if (isSupabaseConfigured && session?.user?.id && session?.access_token) {
       activeUserId = session.user.id;
+      let client = getAuthenticatedClient(session.access_token);
 
       // 1. Deletar todos os registros de historico_logs deste usuário
-      let { error: delErr } = await supabase
+      let { error: delErr } = await client
         .from('historico_logs')
         .delete()
         .eq('user_id', activeUserId)
@@ -1399,11 +1415,12 @@ export default function App() {
       if (delErr && isAuthOrRlsError(delErr)) {
         console.warn('Erro de RLS/Auth ao deletar historico_logs no reset de estudo, tentando renovar sessão...');
         const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
-        if (!refErr && refreshed?.session?.user?.id) {
+        if (!refErr && refreshed?.session?.user?.id && refreshed?.session?.access_token) {
           session = refreshed.session;
           setUserSession(session);
           activeUserId = session.user.id;
-          const retry = await supabase
+          client = getAuthenticatedClient(session.access_token);
+          const retry = await client
             .from('historico_logs')
             .delete()
             .eq('user_id', activeUserId)
@@ -1442,7 +1459,7 @@ export default function App() {
       };
 
       // 2. Upsert dados limpos na tabela user_data_sync
-      let { data: upsertData, error: syncErr } = await supabase
+      let { data: upsertData, error: syncErr } = await client
         .from('user_data_sync')
         .upsert({
           user_id: activeUserId,
@@ -1461,11 +1478,12 @@ export default function App() {
       if (syncErr && isAuthOrRlsError(syncErr)) {
         console.warn('Erro de RLS/Auth ao atualizar user_data_sync no reset de estudo, tentando renovar sessão...');
         const { data: refreshed, error: refErr } = await supabase.auth.refreshSession();
-        if (!refErr && refreshed?.session?.user?.id) {
+        if (!refErr && refreshed?.session?.user?.id && refreshed?.session?.access_token) {
           session = refreshed.session;
           setUserSession(session);
           activeUserId = session.user.id;
-          const retry = await supabase
+          client = getAuthenticatedClient(session.access_token);
+          const retry = await client
             .from('user_data_sync')
             .upsert({
               user_id: activeUserId,
@@ -1566,7 +1584,8 @@ export default function App() {
     if (isSupabaseConfigured) {
       getValidSession().then((session) => {
         if (session?.access_token && session?.user?.id) {
-          supabase
+          const client = getAuthenticatedClient(session.access_token);
+          client
             .from('user_data_sync')
             .update({ configuracoes: {} })
             .eq('user_id', session.user.id)

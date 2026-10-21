@@ -58,14 +58,23 @@ async def run_tests():
         footer = page.locator("#superestrategico-footer")
         await footer.wait_for(state="visible", timeout=10000)
         assert not await modal.is_visible()
-        print("PASS: Logged in successfully, modal closed, dashboard mounted.")
+
+        # Wait for debounced cloud sync (2s debounce + roundtrip) and verify no RLS/Auth toast appears
+        await asyncio.sleep(3.5)
+        rls_toast = page.locator("text='Erro de autenticação ou permissão na nuvem'")
+        assert await rls_toast.count() == 0, "Found unexpected RLS error toast banner!"
+        policy_error = page.locator("text='new row violates row-level security policy'")
+        assert await policy_error.count() == 0, "Found unexpected RLS policy violation message!"
+        print("PASS: Logged in successfully, modal closed, dashboard mounted with 0 RLS/Auth errors.")
 
         print("\n=== TEST 5: Session Persistence Across Reload ===")
         await page.reload(wait_until="networkidle")
-        await asyncio.sleep(1)
+        await asyncio.sleep(2.5)
         assert await footer.is_visible()
         assert not await modal.is_visible()
-        print("PASS: Session persisted on reload, no blank login modal appeared.")
+        rls_toast = page.locator("text='Erro de autenticação ou permissão na nuvem'")
+        assert await rls_toast.count() == 0, "Found unexpected RLS error toast banner after reload!"
+        print("PASS: Session persisted on reload, no blank login modal appeared, and cloud sync succeeded.")
 
         print("\n=== TEST 6: User Logout Flow ===")
         logout_btn = page.locator("button[title='Sair da conta']").first

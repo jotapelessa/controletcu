@@ -16,3 +16,18 @@ export const supabase = createClient(
   supabaseUrl || 'https://placeholder-project.supabase.co',
   supabaseAnonKey || 'placeholder-anon-key'
 );
+
+/**
+ * Cria um cliente Supabase com token de autorização Bearer explícito.
+ * Garante que operações PostgREST usem auth.uid() do usuário sem race condition.
+ */
+export const getAuthenticatedClient = (accessToken: string) => {
+  return createClient(
+    supabaseUrl || 'https://placeholder-project.supabase.co',
+    supabaseAnonKey || 'placeholder-anon-key',
+    {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { headers: { Authorization: `Bearer ${accessToken}` } }
+    }
+  );
+};
