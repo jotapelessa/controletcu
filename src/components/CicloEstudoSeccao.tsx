@@ -74,6 +74,15 @@ export default function CicloEstudoSeccao({ materias, ciclo, historico, onSalvar
   
   // Timer de contagem regressiva baseado nos minutos do Ciclo (geralmente 90)
   const targetMinutos = currentSlot ? currentSlot.tempoMinutos : 90;
+
+  // Atualizar tempoMinutosCustom e segundos do temporizador se não estiver rodando quando a meta mudar
+  useEffect(() => {
+    setTempoMinutosCustom(targetMinutos);
+    if (!rodando && modoRegressivo) {
+      setSegundos(targetMinutos * 60);
+      localStorage.setItem('superestrategico_timer_segundos', (targetMinutos * 60).toString());
+    }
+  }, [targetMinutos, rodando, modoRegressivo]);
   
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
