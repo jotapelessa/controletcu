@@ -1,17 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { Materia, Simulado, LogSessao, StatusAula } from '../types';
-import { Sparkles, BarChart2, CheckCircle, RefreshCcw, BookOpen, Clock, Award, ShieldAlert, AlertTriangle, TrendingUp } from 'lucide-react';
+import { Materia, Simulado, LogSessao, StatusAula, CicloEstudo, RevisaoEspacada, RedacaoCorrigida } from '../types';
+import { Sparkles, BarChart2, CheckCircle, RefreshCcw, BookOpen, Clock, Award, ShieldAlert, AlertTriangle, TrendingUp, RotateCcw, PenTool, Calendar } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { registrarConsumoTokens } from '../utils/geminiTokenTracker';
+import { obterHistoricoRedacoes } from '../utils/redacaoService';
 
 
 interface IAProps {
   materias: Materia[];
   simulados: Simulado[];
   historico: LogSessao[];
+  ciclo?: CicloEstudo | null;
+  revisoes?: RevisaoEspacada[];
+  planejamentoSemanal?: any;
 }
 
-export default function IADiagnostico({ materias, simulados, historico }: IAProps) {
+export default function IADiagnostico({ materias, simulados, historico, ciclo, revisoes = [], planejamentoSemanal }: IAProps) {
   const [loading, setLoading] = useState(false);
   const [diagnostico, setDiagnostico] = useState<string | null>(() => {
     return localStorage.getItem('superestrategico_ia_diagnostico_recente') || null;
@@ -19,30 +23,56 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
   const [loadingMessage, setLoadingMessage] = useState('');
   const [checklistStatus, setChecklistStatus] = useState<boolean[]>([]);
 
-  // 1. Carga Horária nos últimos 7 dias
+  // 1. Carga Horária Periodizada (Hoje, 7 dias, 30 dias)
   const agora = new Date();
-  const seteDiasAtras = new Date();
-  seteDiasAtras.setDate(agora.getDate() - 7);
-  
-  let horasUltimaSemana = 0;
+  const hojeStr = agora.toISOString().split('T')[0];
+  const seteDiasAtras = new Date(agora.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const trintaDiasAtras = new Date(agora.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  let horasHoje = 0;
+  let horasSemana = 0;
+  let horasMes = 0;
+  let questoesHoje = 0;
+  let acertosHoje = 0;
+  let questoesSemana = 0;
+  let acertosSemana = 0;
+
   historico.forEach(log => {
     const dataLog = new Date(log.data);
-    if (dataLog >= seteDiasAtras && dataLog <= agora) {
-      horasUltimaSemana += log.duracaoMinutos / 60;
+    const logH = log.duracaoMinutos / 60;
+    
+    // Hoje
+    if (log.data && log.data.substring(0, 10) === hojeStr) {
+      horasHoje += logH;
+      questoesHoje += (log.questoesResolvidas || 0);
+      acertosHoje += (log.questoesAcertadas || 0);
+    }
+    // 7 dias
+    if (dataLog >= seteDiasAtras) {
+      horasSemana += logH;
+      questoesSemana += (log.questoesResolvidas || 0);
+      acertosSemana += (log.questoesAcertadas || 0);
+    }
+    // 30 dias
+    if (dataLog >= trintaDiasAtras) {
+      horasMes += logH;
     }
   });
+
+  const percentualAcertosSemana = questoesSemana > 0 ? Math.round((acertosSemana / questoesSemana) * 100) : 0;
+  let horasUltimaSemana = horasSemana;
 
   // Calcular estatísticas totais para enviar e exibir
   let totalHoras = 0;
   let totalQuestoes = 0;
   let totalAcertos = 0;
 
-  // 2. Pior Matéria (Ponto Crítico)
+  // 2. Pior Matéria (Ponto Crítico) e Análise de Ciclos por Matéria
   let piorMateriaNome = "Nenhuma";
   let piorMateriaSigla = "";
   let piorMateriaAcerto = 100;
 
-  materias.forEach(m => {
+  const materiasPerformance = materias.map(m => {
     let horas = 0;
     let questoes = 0;
     let acertos = 0;
@@ -66,15 +96,40 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     totalQuestoes += finalQuestoes;
     totalAcertos += finalAcertos;
 
-    if (finalQuestoes > 0) {
-      const taxa = (finalAcertos / finalQuestoes) * 100;
-      if (taxa < piorMateriaAcerto) {
-        piorMateriaAcerto = taxa;
-        piorMateriaNome = m.nome;
-        piorMateriaSigla = m.sigla;
-      }
+    const taxa = finalQuestoes > 0 ? (finalAcertos / finalQuestoes) * 100 : 0;
+    if (finalQuestoes > 0 && taxa < piorMateriaAcerto) {
+      piorMateriaAcerto = taxa;
+      piorMateriaNome = m.nome;
+      piorMateriaSigla = m.sigla;
     }
+
+    // Ciclos da matéria: contagem de logs de estudo nas aulas da matéria
+    const ciclosContagem = m.aulas.length > 0
+      ? Math.min(...m.aulas.map(aula => histMateria.filter(h => h.aulaId === aula.id).length))
+      : 0;
+
+    const metaAcertos = m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
+
+    return {
+      id: m.id,
+      nome: m.nome,
+      sigla: m.sigla,
+      horas: finalHoras,
+      questoes: finalQuestoes,
+      acertos: finalAcertos,
+      taxaAcerto: Math.round(taxa),
+      metaAcertos,
+      aulasConcluidas: m.aulas.filter(a => a.status === StatusAula.Concluido).length,
+      totalAulas: m.aulas.length,
+      ciclosContagem
+    };
   });
+
+  // Estatísticas de Ciclo do Edital
+  const vezesEditalCiclado = materiasPerformance.length > 0
+    ? Math.min(...materiasPerformance.map(m => m.ciclosContagem))
+    : 0;
+  const materiasZeradas = materiasPerformance.filter(m => m.ciclosContagem === 0);
 
   // 3. Progresso do Edital
   let totalAulas = 0;
@@ -84,6 +139,11 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
     aulasConcluidas += m.aulas.filter(a => a.status === StatusAula.Concluido).length;
   });
   const pctEdital = totalAulas > 0 ? Math.round((aulasConcluidas / totalAulas) * 100) : 0;
+
+  // 4. Status de Revisões Espaçadas
+  const revisoesPendentes = revisoes.filter(r => !r.concluida);
+  const revisoesAtrasadas = revisoesPendentes.filter(r => new Date(r.dataRevisaoAlvo).getTime() < agora.getTime());
+  const revisoesConcluidas = revisoes.filter(r => r.concluida);
 
   // Parser de Seções do Diagnóstico
   const obterDiagnosticoEstruturado = (text: string | null) => {
@@ -164,14 +224,15 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
 
   const triggerDiagnostic = async () => {
     setLoading(true);
-    setLoadingMessage("Analisando seu desempenho e consolidação do edital do Estratégia...");
+    setLoadingMessage("Analisando seu desempenho holístico em todas as áreas do TCU...");
     
     const steps = [
-      "Calculando média harmônica de erros...",
-      "Cruzando seu histórico de Controle Externo (RITCU) com o de AFO...",
-      "Avaliando curvas de esquecimento das revisões espaçadas pendentes...",
-      "Consolidando relatórios fiscais do TCU e pontos de peso no Edital...",
-      "Sistematizando plano de ação de Auditoria Governamental..."
+      "Calculando distribuição de horas periodizadas (Hoje, 7d, 30d)...",
+      "Avaliando status do Ciclo de Estudos e quantas vezes o edital foi ciclado...",
+      "Cruzando assertividade real por disciplina contra a meta TCU Target (90-95%)...",
+      "Auditando fila de repetições espaçadas e quebra da curva do esquecimento...",
+      "Checando histórico de redações discursivas, bancas e notas obtidas...",
+      "Estruturando plano tático de Auditor de Controle Externo..."
     ];
 
     let stepIdx = 0;
@@ -186,74 +247,93 @@ export default function IADiagnostico({ materias, simulados, historico }: IAProp
       const userApiKey = localStorage.getItem('superestrategico_user_gemini_api_key');
       let resultText = '';
 
+      // Obter histórico de redações para enriquecer o diagnóstico
+      let redacoesHist: RedacaoCorrigida[] = [];
+      try {
+        redacoesHist = await obterHistoricoRedacoes();
+      } catch (e) {
+        console.warn('Aviso ao carregar redações para diagnóstico:', e);
+      }
+
       if (userApiKey) {
-        // Formatar resumo das matérias
-        const materiasResumo = materias.map((m: any) => {
-          const concluidas = m.aulas.filter((a: any) => a.status === StatusAula.Concluido).length;
-          const emProgresso = m.aulas.filter((a: any) => a.status !== StatusAula.NaoIniciado && a.status !== StatusAula.Concluido).length;
-          
-          let totQuestoes = 0;
-          let totAcertos = 0;
-          m.aulas.forEach((a: any) => {
-            totQuestoes += (a.questoesResolvidas || 0);
-            totAcertos += (a.questoesAcertadas || 0);
-          });
+        // Formatadores dos resumos
+        const materiasResumo = materiasPerformance.map(m => {
+        const statusMeta = m.questoes > 0 
+          ? (m.taxaAcerto >= m.metaAcertos ? `✅ Meta Atingida` : `⚠️ Abaixo da meta (${m.metaAcertos}%)`)
+          : `Sem questões`;
+        return `- **${m.nome} (${m.sigla})**: ${m.aulasConcluidas}/${m.totalAulas} aulas concluídas. Questões: ${m.questoes}, Acertos: ${m.taxaAcerto}% (Meta TCU Target: ${m.metaAcertos}%) - ${statusMeta} | Ciclos concluídos: ${m.ciclosContagem}x`;
+      }).join("\n");
 
-          const histMateria = (historico || []).filter((h: any) => h.materiaId === m.id);
-          const mQuestHist = histMateria.reduce((acc: number, curr: any) => acc + (curr.questoesResolvidas || 0), 0);
-          const mAcertHist = histMateria.reduce((acc: number, curr: any) => acc + (curr.questoesAcertadas || 0), 0);
+      const simuladosResumo = simulados && simulados.length > 0
+        ? simulados.map((s: any) => `- **${s.titulo}** (${s.data}): ${s.questoesAcertadas}/${s.totalQuestoes} acertos (${Math.round((s.questoesAcertadas/s.totalQuestoes)*100)}%)`).join("\n")
+        : "Nenhum simulado cadastrado ainda.";
 
-          const finalQuestoes = Math.max(totQuestoes, mQuestHist);
-          const finalAcertos = Math.max(totAcertos, mAcertHist);
-          const taxaAcerto = finalQuestoes > 0 ? Math.round((finalAcertos / finalQuestoes) * 100) : 0;
-          const meta = m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
+      const redacoesResumo = redacoesHist.length > 0
+        ? redacoesHist.slice(0, 5).map(r => `- **${r.concurso || 'TCU'}** (${r.banca || 'FGV'} - ${r.tipo}): Nota ${r.notaGlobal} | Tema: "${r.tema}" (${new Date(r.dataCriacao).toLocaleDateString('pt-BR')})`).join("\n")
+        : "Nenhuma redação discursiva realizada ainda.";
 
-          return `- **${m.nome} (${m.sigla})**: ${concluidas}/${m.aulas.length} aulas concluídas. ${emProgresso} em progresso. Questões resolvidas: ${finalQuestoes}, Acerto: ${taxaAcerto}% (Meta Configurada: ${meta}%)`;
-        }).join("\n");
+      const cicloResumo = ciclo && ciclo.itens && ciclo.itens.length > 0
+        ? `Ciclo: "${ciclo.nome}", contendo ${ciclo.itens.length} matérias coordenadas. Matéria no ponteiro atual: ${ciclo.itens[ciclo.itemAtualIndice]?.materiaId || 'Início'}. Edital ciclado integralmente: ${vezesEditalCiclado} vezes. Disciplinas zeradas no ciclo: ${materiasZeradas.length > 0 ? materiasZeradas.map(m => m.sigla).join(', ') : 'Nenhuma'}.`
+        : "Ciclo de estudos não configurado.";
 
-        const simuladosResumo = simulados && simulados.length > 0
-          ? simulados.map((s: any) => `- **${s.titulo}** (${s.data}): ${s.questoesAcertadas}/${s.totalQuestoes} acertos (${Math.round((s.questoesAcertadas/s.totalQuestoes)*100)}%)`).join("\n")
-          : "Nenhum simulado cadastrado ainda.";
+      const revisoesResumo = `Total: ${revisoes.length} revisões cadastradas. Pendentes: ${revisoesPendentes.length}, Atrasadas (risco de curva do esquecimento): ${revisoesAtrasadas.length}, Dominadas/Concluídas: ${revisoesConcluidas.length}.`;
 
-        const historicoResumo = historico && historico.length > 0
-          ? historico.slice(0, 5).map((h: any) => `- ${new Date(h.data).toLocaleDateString('pt-BR')}: Estudou ${h.materiaId} por ${h.duracaoMinutos} min (${h.tipo})`).join("\n")
-          : "Nenhum histórico recente.";
+      const cronogramaResumo = planejamentoSemanal && typeof planejamentoSemanal === 'object'
+        ? `Meta semanal de estudo: ${planejamentoSemanal.horasMetaSemanal || 119}h planejadas. Carga cumprida nos últimos 7 dias: ${horasSemana.toFixed(1)}h (${questoesSemana} questões, ${percentualAcertosSemana}% de acerto).`
+        : `Carga cumprida nos últimos 7 dias: ${horasSemana.toFixed(1)}h (${questoesSemana} questões, ${percentualAcertosSemana}% de acerto).`;
 
-        const prompt = `Você é um Coach e Mentor altamente especializado no concurso de Auditor de Controle Externo do TCU (Tribunal de Contas da União), a área mais concorrida de controle. 
-Analise as estatísticas atuais de estudos deste assinante do Estratégia Concursos e gere um diagnóstico de estudos estratégico profissional, com feedback crítico, construtivo e motivador em Português (Brasil).
+      const periodizadasResumo = `- **Hoje**: ${horasHoje.toFixed(1)}h de estudo ativo, ${questoesHoje} questões resolvidas (${acertosHoje} acertos).
+- **Últimos 7 dias**: ${horasSemana.toFixed(1)}h de estudo ativo, ${questoesSemana} questões resolvidas (${percentualAcertosSemana}% de assertividade).
+- **Últimos 30 dias**: ${horasMes.toFixed(1)}h acumuladas.`;
 
-### Métricas de Estudo Gerais:
-- **Total de Horas Estudadas**: ${(totalHoras ?? 0).toFixed(1)} horas
-- **Total de Questões Feitas**: ${totalQuestoes ?? 0}
-- **Média Geral de Acertos**: ${(totalQuestoes ?? 0) > 0 ? Math.round(((totalAcertos ?? 0) / (totalQuestoes ?? 1)) * 100) : 0}%
+      const prompt = `Você é um Coach e Mentor altamente especializado no concurso de Auditor Federal de Controle Externo do TCU (Tribunal de Contas da União), a carreira de auditoria e controle mais exigente do país.
+Analise a telemetria integral de todas as áreas da plataforma do aluno (Painel Geral, Ciclo de Estudos, Histórico de Ciclos, Cronograma Semanal, Material do Estratégia, Revisões Espaçadas, Simulados da Banca e Redações Discursivas) e elabore um diagnóstico tático completo de alto impacto.
 
-### Desempenho por Matéria (Baseado no Edital Estratégia):
+### 1. Repartição de Horas Periodizadas (Gráfico Horizontal de Foco):
+${periodizadasResumo}
+
+### 2. Status do Ciclo de Estudos e Histórico de Ciclos:
+${cicloResumo}
+- Total de sessões/blocos de foco coordenados: ${historico.length} sessões.
+
+### 3. Índice de Acertos e Erros por Disciplina (TCU Target - 90% a 95%):
 ${materiasResumo}
+- Ponto mais vulnerável no momento: ${piorMateriaNome} (${piorMateriaSigla}) com ${Math.round(piorMateriaAcerto)}% de acerto.
+- Média geral de todas as matérias: ${totalQuestoes > 0 ? Math.round((totalAcertos / totalQuestoes) * 100) : 0}% (${totalAcertos} acertos em ${totalQuestoes} questões resolvidas ao longo de ${totalHoras.toFixed(1)}h de estudo).
 
-### Histórico de Simulados da Banca:
+### 4. Curva do Esquecimento e Revisões Espaçadas:
+${revisoesResumo}
+
+### 5. Cronograma Semanal e Ritmo de Execução:
+${cronogramaResumo}
+
+### 6. Simulados da Banca:
 ${simuladosResumo}
 
-### Últimas Sessões de Estudo Registradas:
-${historicoResumo}
+### 7. Mentor de Redação IA (Treinamento Discursivo):
+${redacoesResumo}
+
+---
 
 ### Instruções Cruciais de Estrutura da Resposta:
 Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag indicados abaixo. Não coloque nenhum texto fora delas:
 
 [DIAGNOSTICO_GERAL]
-(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 90-95% (ou conforme metas configuradas por matéria) exigido para o TCU.)
+(Apresente uma análise holística da evolução do aluno. Avalie as Horas Periodizadas (Hoje vs 7 dias vs 30 dias), o ritmo no Cronograma Semanal, a velocidade de cobertura do edital e o volume de sessões coordenadas do Ciclo de Estudos. Destaque se o ritmo atual é sustentável para a aprovação no TCU.)
 
 [ALERTA_FRAQUEZA]
-(Identifique e disserte sobre as matérias com pior desempenho ou inércia de estudos, alertando sobre o risco estatístico destas no edital do TCU.)
+(Identifique pontualmente as maiores ameaças estatísticas: matérias abaixo da meta TCU Target de 90-95%, disciplinas negligenciadas ou zeradas no ciclo, revisões espaçadas vencidas/atrasadas com quebra da curva do esquecimento e defasagem no treino discursivo de redação.)
 
 [RECOMENDACOES]
-(Dicas práticas de remediação para o ciclo de estudos e gestão de revisões espaçadas.)
+(Forneça diretrizes práticas de engenharia de estudos: como reorganizar os blocos de 90 minutos do ciclo, calibrar as revisões atrasadas de 24h/7d/30d, elevar a assertividade nas disciplinas-chave como Controle Externo/AFO/Auditoria e equilibrar o tempo entre resolução de questões e confecção de peças/redações discursivas.)
 
 [PASSOS]
 - [ ] Passo 1
 - [ ] Passo 2
-(Defina um checklist com 2 ou 3 passos de ação imediata que o usuário deve seguir hoje. Utilize obrigatoriamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
+- [ ] Passo 3
+(Defina 3 passos de ação corretiva de implementação imediata para o dia de hoje. Use estritamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
 
-Mantenha uma linguagem acadêmica, séria e focada na excelência profissional que o cargo de Auditor exige.`;
+Mantenha uma linguagem incisiva, analítica, profissional e focada no mais alto padrão de desempenho exigido pelo TCU.`;
 
         const safetySettings = [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
@@ -358,7 +438,20 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
             historico,
             totalHoras,
             totalQuestoes,
-            totalAcertos
+            totalAcertos,
+            ciclo,
+            revisoes,
+            planejamentoSemanal,
+            redacoes: redacoesHist,
+            horasPeriodizadas: {
+              hoje: horasHoje,
+              semana: horasSemana,
+              mes: horasMes,
+              questoesHoje,
+              acertosHoje,
+              questoesSemana,
+              acertosSemana
+            }
           })
         });
 
@@ -532,7 +625,7 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
           {/* BARRA DE METRICAS RAPIDAS (ROW 1) */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4" id="ai-metricas-rapidas">
             
-            {/* Carga de Horas */}
+            {/* Carga de Horas Periodizadas */}
             <div className={`p-4 rounded border flex items-center gap-3.5 ${
               horasUltimaSemana > 50 
                 ? 'bg-rose-950/20 border-rose-500/30 text-rose-300' 
@@ -550,43 +643,37 @@ Mantenha uma linguagem acadêmica, séria e focada na excelência profissional q
                 <Clock size={16} className={horasUltimaSemana > 50 ? 'animate-pulse' : ''} />
               </div>
               <div className="font-sans">
-                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Carga Horária (7d)</span>
-                <span className="text-xs font-bold">
-                  {horasUltimaSemana > 50 
-                    ? `⚠️ Fadiga Crítica (${horasUltimaSemana.toFixed(1)}h)` 
-                    : horasUltimaSemana > 30 
-                    ? `⚡ Carga Intensa (${horasUltimaSemana.toFixed(1)}h)` 
-                    : `✅ Ritmo Saudável (${horasUltimaSemana.toFixed(1)}h)`
-                  }
+                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Horas Periodizadas</span>
+                <span className="text-xs font-bold block">
+                  Hoje: {horasHoje.toFixed(1)}h • 7d: {horasSemana.toFixed(1)}h • 30d: {horasMes.toFixed(1)}h
                 </span>
               </div>
             </div>
 
-            {/* Matéria Frágil */}
+            {/* Matéria Frágil (TCU Target) */}
             <div className="p-4 bg-slate-900/40 border border-[#1E293B] rounded flex items-center gap-3.5 text-[#E2E8F0]">
               <div className="p-2.5 bg-rose-500/10 text-rose-400 rounded-full shrink-0">
                 <AlertTriangle size={16} />
               </div>
               <div className="font-sans">
-                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Ponto Crítico</span>
-                <span className="text-xs font-bold">
+                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Ponto Crítico (TCU Target)</span>
+                <span className="text-xs font-bold block">
                   {piorMateriaSigla 
-                    ? `🔥 ${piorMateriaSigla} (${Math.round(piorMateriaAcerto)}% acerto)` 
+                    ? `🔥 ${piorMateriaSigla} (${Math.round(piorMateriaAcerto)}% vs 90-95%)` 
                     : '📚 Sem dados de acerto'
                   }
                 </span>
               </div>
             </div>
 
-            {/* Cobertura de Edital */}
+            {/* Cobertura de Edital & Ciclos */}
             <div className="p-4 bg-slate-900/40 border border-[#1E293B] rounded flex items-center gap-3.5 text-[#E2E8F0]">
               <div className="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-full shrink-0">
-                <TrendingUp size={16} />
+                <RotateCcw size={16} />
               </div>
               <div className="flex-1 font-sans">
-                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Edital Concluído</span>
+                <span className="text-[9px] text-[#64748B] block font-mono uppercase tracking-wider">Edital ({pctEdital}%) • Ciclos ({vezesEditalCiclado}x)</span>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs font-bold">{pctEdital}%</span>
                   <div className="flex-1 bg-slate-800 rounded-full h-1.5 overflow-hidden">
                     <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${pctEdital}%` }} />
                   </div>

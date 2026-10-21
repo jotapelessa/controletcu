@@ -26,9 +26,11 @@ interface StatsProps {
   materias: Materia[];
   historico: LogSessao[];
   onSelectMateria: (materiaId: string) => void;
+  inicialMostrarHistorico?: boolean;
+  onToggleHistorico?: (aberto: boolean) => void;
 }
 
-export default function DashboardStats({ materias, historico, onSelectMateria }: StatsProps) {
+export default function DashboardStats({ materias, historico, onSelectMateria, inicialMostrarHistorico = false, onToggleHistorico }: StatsProps) {
   // --- 1. ESTADOS DO TIMER DA PROVA & PROJEÇÃO ---
   const [dataProva, setDataProva] = useState<string>(() => {
     return localStorage.getItem('superestrategico_data_prova') || '2026-10-18T13:00:00';
@@ -44,7 +46,17 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
   });
 
   // --- ESTADOS DO HISTÓRICO EXPANDIDO ---
-  const [mostrarHistoricoCompleto, setMostrarHistoricoCompleto] = useState(false);
+  const [mostrarHistoricoCompleto, setMostrarHistoricoCompleto] = useState(inicialMostrarHistorico);
+
+  useEffect(() => {
+    setMostrarHistoricoCompleto(inicialMostrarHistorico);
+  }, [inicialMostrarHistorico]);
+
+  const alternarHistorico = (aberto: boolean) => {
+    setMostrarHistoricoCompleto(aberto);
+    onToggleHistorico?.(aberto);
+  };
+
   const [abaHistorico, setAbaHistorico] = useState<'semanas' | 'materias' | 'logs'>('semanas');
   const [materiaFiltro, setMateriaFiltro] = useState<string>('all');
   const [tipoFiltro, setTipoFiltro] = useState<string>('all');
@@ -334,7 +346,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
           
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <button
-              onClick={() => setMostrarHistoricoCompleto(false)}
+              onClick={() => alternarHistorico(false)}
               className="text-xs text-[#C5A059] hover:text-white bg-[#1E293B] border border-[#1E293B] hover:border-[#C5A059]/40 px-3 py-1.5 rounded transition-all flex items-center gap-2 cursor-pointer font-sans"
             >
               <ArrowLeft size={14} /> Voltar ao Cockpit Geral
@@ -926,7 +938,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
                 <RotateCcw size={14} /> Ciclos Realizados do Edital
               </span>
               <button 
-                onClick={() => setMostrarHistoricoCompleto(true)}
+                onClick={() => alternarHistorico(true)}
                 className="text-[9px] font-mono bg-[#C5A059]/10 text-[#C5A059] border border-[#C5A059]/20 hover:bg-[#C5A059]/30 hover:text-white px-2 py-0.5 rounded uppercase font-bold cursor-pointer transition-all"
                 title="Ver Histórico Completo de Ciclos"
               >
@@ -974,7 +986,7 @@ export default function DashboardStats({ materias, historico, onSelectMateria }:
           )}
 
           <button
-            onClick={() => setMostrarHistoricoCompleto(true)}
+            onClick={() => alternarHistorico(true)}
             className="mt-4 w-full bg-[#1E293B]/60 hover:bg-[#1E293B] border border-[#1E293B] hover:border-[#C5A059]/30 text-[#C5A059] hover:text-white transition-all rounded py-2 text-xs font-display font-bold flex items-center justify-center gap-2 cursor-pointer shadow-sm"
           >
             <RotateCcw size={13} /> Ver Painel Detalhado de Ciclos →

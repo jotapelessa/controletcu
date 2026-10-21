@@ -17,6 +17,7 @@ import Homepage, { DEFAULT_CMS_CONTENT } from './components/Homepage';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import CorrecaoRedacao from './components/CorrecaoRedacao';
 import AnalisadorEditalTab from './components/AnalisadorEditalTab';
+import { sincronizarRedacoesPendentes } from './utils/redacaoService';
 
 export default function App() {
   // Estados Globais da Aplicação (inicializados diretamente do localStorage / padrões para evitar estados vazios no mount)
@@ -588,6 +589,11 @@ export default function App() {
         }
       }
 
+      // Sincronizar qualquer redação pendente na fila para o Supabase
+      sincronizarRedacoesPendentes().catch(err => {
+        console.warn('Aviso ao sincronizar redações pendentes em sendDadosToCloud:', err);
+      });
+
       // Gravar timestamp exato retornado pelo Supabase no banco (elimina falsos deltas por clock skew)
       const serverTimeMs = upsertData?.updated_at
         ? new Date(upsertData.updated_at).getTime()
@@ -977,8 +983,104 @@ export default function App() {
     setHistorico(dados.historico);
   };
 
-  // Monitorar abas
-  const [abaAtiva, setAbaAtiva] = useState<'painel' | 'ciclo' | 'planejamento' | 'edital' | 'revisoes' | 'simulados' | 'coach' | 'dados' | 'admin' | 'redacao' | 'analise-edital'>('painel');
+  // Helper de conversão entre pathname da URL e identificador de aba
+  const getAbaInfoFromPath = (pathname: string): { aba: 'painel' | 'ciclo' | 'planejamento' | 'edital' | 'revisoes' | 'simulados' | 'coach' | 'dados' | 'admin' | 'redacao' | 'analise-edital'; historicoAberto: boolean } => {
+    try {
+      const decoded = decodeURIComponent(pathname).toLowerCase().replace(/\/+$/, '') || '/';
+      const cleanPath = decoded.startsWith('/') ? decoded.slice(1) : decoded;
+
+      if (!cleanPath || cleanPath === 'painel') {
+        return { aba: 'painel', historicoAberto: false };
+      }
+      if (cleanPath === 'historicos' || cleanPath === 'historico') {
+        return { aba: 'painel', historicoAberto: true };
+      }
+      if (cleanPath === 'ciclos' || cleanPath === 'ciclo') {
+        return { aba: 'ciclo', historicoAberto: false };
+      }
+      if (cleanPath === 'cronograma' || cleanPath === 'planejamento') {
+        return { aba: 'planejamento', historicoAberto: false };
+      }
+      if (cleanPath === 'material' || cleanPath === 'cursos') {
+        return { aba: 'edital', historicoAberto: false };
+      }
+      if (cleanPath === 'revisões' || cleanPath === 'revisoes' || cleanPath === 'revisao') {
+        return { aba: 'revisoes', historicoAberto: false };
+      }
+      if (cleanPath === 'simulado' || cleanPath === 'simulados') {
+        return { aba: 'simulados', historicoAberto: false };
+      }
+      if (cleanPath === 'couch' || cleanPath === 'coach' || cleanPath === 'ia-coach') {
+        return { aba: 'coach', historicoAberto: false };
+      }
+      if (cleanPath === 'edital' || cleanPath === 'analise-edital' || cleanPath === 'edital-ia') {
+        return { aba: 'analise-edital', historicoAberto: false };
+      }
+      if (cleanPath === 'redação' || cleanPath === 'redacao' || cleanPath === 'redacoes') {
+        return { aba: 'redacao', historicoAberto: false };
+      }
+      if (cleanPath === 'dados' || cleanPath === 'backup') {
+        return { aba: 'dados', historicoAberto: false };
+      }
+      if (cleanPath === 'admin') {
+        return { aba: 'admin', historicoAberto: false };
+      }
+    } catch (e) {
+      console.warn('Aviso ao analisar pathname da URL:', e);
+    }
+    return { aba: 'painel', historicoAberto: false };
+  };
+
+  const getPathForAba = (aba: string, historicoAberto = false): string => {
+    if (aba === 'painel' && historicoAberto) return '/historicos';
+    switch (aba) {
+      case 'painel': return '/painel';
+      case 'ciclo': return '/ciclos';
+      case 'planejamento': return '/cronograma';
+      case 'edital': return '/material';
+      case 'revisoes': return '/revisões';
+      case 'simulados': return '/simulado';
+      case 'coach': return '/couch';
+      case 'analise-edital': return '/edital';
+      case 'redacao': return '/redação';
+      case 'dados': return '/dados';
+      case 'admin': return '/admin';
+      default: return '/painel';
+    }
+  };
+
+  // Monitorar abas e subvisão de histórico a partir da URL
+  const initialAbaInfo = getAbaInfoFromPath(typeof window !== 'undefined' ? window.location.pathname : '/');
+  const [abaAtiva, setAbaAtivaState] = useState<'painel' | 'ciclo' | 'planejamento' | 'edital' | 'revisoes' | 'simulados' | 'coach' | 'dados' | 'admin' | 'redacao' | 'analise-edital'>(initialAbaInfo.aba);
+  const [historicoCompletoAberto, setHistoricoCompletoAberto] = useState<boolean>(initialAbaInfo.historicoAberto);
+
+  // Navegar para uma aba atualizando a URL no histórico do navegador
+  const navegarParaAba = (novaAba: 'painel' | 'ciclo' | 'planejamento' | 'edital' | 'revisoes' | 'simulados' | 'coach' | 'dados' | 'admin' | 'redacao' | 'analise-edital', abrirHistorico = false) => {
+    setAbaAtivaState(novaAba);
+    setHistoricoCompletoAberto(abrirHistorico);
+
+    const novoPath = getPathForAba(novaAba, abrirHistorico);
+    if (typeof window !== 'undefined' && window.location.pathname !== novoPath) {
+      window.history.pushState({ aba: novaAba, historicoAberto: abrirHistorico }, '', novoPath);
+    }
+  };
+
+  // Escutar eventos popstate do navegador (botões Voltar/Avançar)
+  useEffect(() => {
+    const handlePopState = () => {
+      const info = getAbaInfoFromPath(window.location.pathname);
+      setAbaAtivaState(info.aba);
+      setHistoricoCompletoAberto(info.historicoAberto);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Setter compatível para componentes filhos
+  const setAbaAtiva = (novaAba: 'painel' | 'ciclo' | 'planejamento' | 'edital' | 'revisoes' | 'simulados' | 'coach' | 'dados' | 'admin' | 'redacao' | 'analise-edital') => {
+    navegarParaAba(novaAba, false);
+  };
 
   // Sincronizadores e Triggers de Salvamento
   const handleAtualizarAula = (materiaId: string, aulaAtualizada: Aula) => {
@@ -1719,6 +1821,21 @@ export default function App() {
     if (backup.configuracoes) {
       aplicarConfiguracoesLocais(backup.configuracoes);
     }
+
+    if (backup.redacoes && Array.isArray(backup.redacoes) && backup.redacoes.length > 0) {
+      try {
+        const localRedacoesRaw = localStorage.getItem('superestrategico_redacoes_historico');
+        const localRedacoes = localRedacoesRaw ? JSON.parse(localRedacoesRaw) : [];
+        const mapa = new Map();
+        localRedacoes.forEach((r: any) => mapa.set(r.id, r));
+        backup.redacoes.forEach((r: any) => mapa.set(r.id, r));
+        const mesclado = Array.from(mapa.values());
+        localStorage.setItem('superestrategico_redacoes_historico', JSON.stringify(mesclado));
+        sincronizarRedacoesPendentes().catch(() => {});
+      } catch (e) {
+        console.warn('Aviso ao restaurar redações do backup:', e);
+      }
+    }
   };
 
   const handleAuthSuccess = (session?: any) => {
@@ -2070,6 +2187,8 @@ export default function App() {
                 materias={materias} 
                 historico={historico} 
                 onSelectMateria={handleNavegarParaMateriaEdital}
+                inicialMostrarHistorico={historicoCompletoAberto}
+                onToggleHistorico={(aberto) => navegarParaAba('painel', aberto)}
               />
             )}
 
@@ -2124,6 +2243,14 @@ export default function App() {
                 materias={materias}
                 simulados={simulados}
                 historico={historico}
+                ciclo={ciclo}
+                revisoes={revisoes}
+                planejamentoSemanal={(() => {
+                  try {
+                    const raw = localStorage.getItem('superestrategico_planejamento_semanal');
+                    return raw ? JSON.parse(raw) : null;
+                  } catch { return null; }
+                })()}
               />
             )}
 

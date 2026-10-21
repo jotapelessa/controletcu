@@ -45,6 +45,7 @@ interface AppBackup {
   historico: LogSessao[];
   planejamentoSemanal?: any;
   configuracoes?: any;
+  redacoes?: any[];
 }
 
 interface DadosEBackupProps {
@@ -365,10 +366,12 @@ export default function DadosEBackup({
       timer_wrong_list: getLocalStorageItemJson('superestrategico_timer_wrong_list') || [],
       timer_limite_questoes: parseInt(localStorage.getItem('superestrategico_timer_limite_questoes') || '50', 10),
       timer_modal_open: localStorage.getItem('superestrategico_timer_modal_open') === 'true',
-      ia_diagnostico_recente: localStorage.getItem('superestrategico_ia_diagnostico_recente'),
       github_token: localStorage.getItem('superestrategico_github_token') || '',
       github_gist_id: localStorage.getItem('superestrategico_github_gist_id') || ''
     };
+
+    const redacoesRaw = localStorage.getItem('superestrategico_redacoes_historico');
+    const redacoes = redacoesRaw ? JSON.parse(redacoesRaw) : [];
 
     return {
       version: "1.2.0",
@@ -379,7 +382,8 @@ export default function DadosEBackup({
       revisoes,
       historico,
       planejamentoSemanal,
-      configuracoes
+      configuracoes,
+      redacoes
     };
   };
 

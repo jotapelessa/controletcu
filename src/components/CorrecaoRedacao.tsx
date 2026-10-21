@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, RefreshCcw, AlertTriangle, Send, Copy, Trash2, PenTool, FileText, CheckCircle, HelpCircle, Award, BookOpen, Check, Printer, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Sparkles, RefreshCcw, AlertTriangle, Send, Copy, Trash2, PenTool, FileText, CheckCircle, HelpCircle, Award, BookOpen, Check, Printer, ChevronLeft, ChevronRight, Cloud, CloudOff } from 'lucide-react';
 import { RedacaoCorrigida } from '../types';
-import { obterHistoricoRedacoes, adicionarRedacaoAoHistorico, removerRedacaoDoHistorico } from '../utils/redacaoService';
+import { obterHistoricoRedacoes, adicionarRedacaoAoHistorico, removerRedacaoDoHistorico, obterRedacoesPendentes } from '../utils/redacaoService';
 import { registrarConsumoTokens } from '../utils/geminiTokenTracker';
 
 interface CorrecaoEstruturada {
@@ -2162,6 +2162,9 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                 minute: '2-digit'
               });
 
+              const pendentes = obterRedacoesPendentes();
+              const isPendente = pendentes.some(p => p.id === item.id);
+
               return (
                 <div
                   key={item.id}
@@ -2177,7 +2180,18 @@ TOM E ABORDAGEM: Seja analítico, porém encorajador. Explique o “porquê” d
                 >
                   <div className="space-y-2">
                     <div className="flex items-start justify-between gap-2">
-                      <span className="text-[10px] font-mono text-[#64748B]">{dataFormatada}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-mono text-[#64748B]">{dataFormatada}</span>
+                        {isPendente ? (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-mono text-amber-400/90 bg-amber-400/10 px-1 py-0.2 rounded border border-amber-400/20" title="Salvo localmente (pendente de envio à nuvem)">
+                            <CloudOff size={10} /> Local
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] font-mono text-emerald-400/90 bg-emerald-400/10 px-1 py-0.2 rounded border border-emerald-400/20" title="Sincronizado na nuvem (Supabase)">
+                            <Cloud size={10} /> Nuvem
+                          </span>
+                        )}
+                      </div>
                       <button
                         onClick={(e) => handleDeletarHistorico(item.id, e)}
                         className="text-[#64748B] hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-[#1E293B]"

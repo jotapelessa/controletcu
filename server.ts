@@ -98,7 +98,7 @@ app.post("/api/diagnostico", limiter, async (req, res) => {
       return res.status(401).json({ success: false, error: "Acesso não autorizado. Sessão inválida ou expirada." });
     }
 
-    const { materias, simulados, historico, totalHoras, totalQuestoes, totalAcertos } = req.body;
+    const { materias, simulados, historico, totalHoras, totalQuestoes, totalAcertos, ciclo, revisoes, planejamentoSemanal, redacoes, horasPeriodizadas } = req.body;
 
     const geminiKey = process.env.GEMINI_API_KEY || (req.headers['x-gemini-api-key'] as string);
 
@@ -118,10 +118,8 @@ app.post("/api/diagnostico", limiter, async (req, res) => {
       }
     });
 
-    const materiasResumo = materias.map((m: any) => {
+    const materiasPerformance = (materias || []).map((m: any) => {
       const concluidas = m.aulas.filter((a: any) => a.status === 'Concluído').length;
-      const emProgresso = m.aulas.filter((a: any) => a.status !== 'Não Iniciado' && a.status !== 'Concluído').length;
-      
       let totQuestoes = 0;
       let totAcertos = 0;
       m.aulas.forEach((a: any) => {
@@ -137,53 +135,107 @@ app.post("/api/diagnostico", limiter, async (req, res) => {
       const finalAcertos = Math.max(totAcertos, mAcertHist);
       const taxaAcerto = finalQuestoes > 0 ? Math.round((finalAcertos / finalQuestoes) * 100) : 0;
       const meta = m.metaAcertos !== undefined ? m.metaAcertos : (['CEX', 'AFO', 'AUD'].includes(m.sigla) ? 95 : 90);
+      const ciclosContagem = m.aulas.length > 0
+        ? Math.min(...m.aulas.map((aula: any) => histMateria.filter((h: any) => h.aulaId === aula.id).length))
+        : 0;
 
-      return `- **${m.nome} (${m.sigla})**: ${concluidas}/${m.aulas.length} aulas concluídas. ${emProgresso} em progresso. Questões resolvidas: ${finalQuestoes}, Acerto: ${taxaAcerto}% (Meta Configurada: ${meta}%)`;
+      return {
+        ...m,
+        concluidas,
+        totalAulas: m.aulas.length,
+        finalQuestoes,
+        taxaAcerto,
+        meta,
+        ciclosContagem
+      };
+    });
+
+    const materiasResumo = materiasPerformance.map((m: any) => {
+      const statusMeta = m.finalQuestoes > 0 
+        ? (m.taxaAcerto >= m.meta ? `✅ Meta Atingida` : `⚠️ Abaixo da meta (${m.meta}%)`)
+        : `Sem questões`;
+      return `- **${m.nome} (${m.sigla})**: ${m.concluidas}/${m.totalAulas} aulas concluídas. Questões: ${m.finalQuestoes}, Acerto: ${m.taxaAcerto}% (Meta TCU Target: ${m.meta}%) - ${statusMeta} | Ciclos concluídos: ${m.ciclosContagem}x`;
     }).join("\n");
+
+    const vezesEditalCiclado = materiasPerformance.length > 0
+      ? Math.min(...materiasPerformance.map((m: any) => m.ciclosContagem))
+      : 0;
+    const materiasZeradas = materiasPerformance.filter((m: any) => m.ciclosContagem === 0);
 
     const simuladosResumo = simulados && simulados.length > 0
       ? simulados.map((s: any) => `- **${s.titulo}** (${s.data}): ${s.questoesAcertadas}/${s.totalQuestoes} acertos (${Math.round((s.questoesAcertadas/s.totalQuestoes)*100)}%)`).join("\n")
       : "Nenhum simulado cadastrado ainda.";
 
-    const historicoResumo = historico && historico.length > 0
-      ? historico.slice(0, 5).map((h: any) => `- ${new Date(h.data).toLocaleDateString('pt-BR')}: Estudou ${h.materiaId} por ${h.duracaoMinutos} min (${h.tipo})`).join("\n")
-      : "Nenhum histórico recente.";
+    const redacoesResumo = redacoes && redacoes.length > 0
+      ? redacoes.slice(0, 5).map((r: any) => `- **${r.concurso || 'TCU'}** (${r.banca || 'FGV'} - ${r.tipo}): Nota ${r.notaGlobal} | Tema: "${r.tema}" (${new Date(r.dataCriacao || r.created_at).toLocaleDateString('pt-BR')})`).join("\n")
+      : "Nenhuma redação discursiva realizada ainda.";
 
-    const prompt = `Você é um Coach e Mentor altamente especializado no concurso de Auditor de Controle Externo do TCU (Tribunal de Contas da União), a área mais concorrida de controle. 
-Analise as estatísticas atuais de estudos deste assinante do Estratégia Concursos e gere um diagnóstico de estudos estratégico profissional, com feedback crítico, construtivo e motivador em Português (Brasil).
+    const cicloResumo = ciclo && ciclo.itens && ciclo.itens.length > 0
+      ? `Ciclo: "${ciclo.nome}", contendo ${ciclo.itens.length} matérias coordenadas. Ponteiro atual: ${ciclo.itens[ciclo.itemAtualIndice]?.materiaId || 'Início'}. Edital ciclado integralmente: ${vezesEditalCiclado} vezes. Disciplinas zeradas no ciclo: ${materiasZeradas.length > 0 ? materiasZeradas.map((m: any) => m.sigla).join(', ') : 'Nenhuma'}.`
+      : "Ciclo de estudos não configurado.";
 
-### Métricas de Estudo Gerais:
-- **Total de Horas Estudadas**: ${(totalHoras ?? 0).toFixed(1)} horas
-- **Total de Questões Feitas**: ${totalQuestoes ?? 0}
-- **Média Geral de Acertos**: ${(totalQuestoes ?? 0) > 0 ? Math.round(((totalAcertos ?? 0) / (totalQuestoes ?? 1)) * 100) : 0}%
+    const agoraDate = new Date();
+    const revisoesList = Array.isArray(revisoes) ? revisoes : [];
+    const revPendentes = revisoesList.filter((r: any) => !r.concluida);
+    const revAtrasadas = revPendentes.filter((r: any) => new Date(r.dataRevisaoAlvo).getTime() < agoraDate.getTime());
+    const revisoesResumo = `Total: ${revisoesList.length} revisões cadastradas. Pendentes: ${revPendentes.length}, Atrasadas (curva do esquecimento rompida): ${revAtrasadas.length}, Dominadas/Concluídas: ${revisoesList.length - revPendentes.length}.`;
 
-### Desempenho por Matéria (Baseado no Edital Estratégia):
+    const hp = horasPeriodizadas || {};
+    const periodizadasResumo = `- **Hoje**: ${(hp.hoje ?? 0).toFixed(1)}h de estudo ativo, ${hp.questoesHoje ?? 0} questões resolvidas (${hp.acertosHoje ?? 0} acertos).
+- **Últimos 7 dias**: ${(hp.semana ?? 0).toFixed(1)}h de estudo ativo, ${hp.questoesSemana ?? 0} questões resolvidas (${hp.questoesSemana > 0 ? Math.round(((hp.acertosSemana ?? 0) / hp.questoesSemana) * 100) : 0}% de assertividade).
+- **Últimos 30 dias**: ${(hp.mes ?? 0).toFixed(1)}h acumuladas.`;
+
+    const cronogramaResumo = planejamentoSemanal && typeof planejamentoSemanal === 'object'
+      ? `Meta semanal de estudo: ${planejamentoSemanal.horasMetaSemanal || 119}h planejadas. Carga cumprida nos últimos 7 dias: ${(hp.semana ?? 0).toFixed(1)}h.`
+      : `Carga cumprida nos últimos 7 dias: ${(hp.semana ?? 0).toFixed(1)}h.`;
+
+    const prompt = `Você é um Coach e Mentor altamente especializado no concurso de Auditor Federal de Controle Externo do TCU (Tribunal de Contas da União), a carreira de auditoria e controle mais exigente do país.
+Analise a telemetria integral de todas as áreas da plataforma do aluno (Painel Geral, Ciclo de Estudos, Histórico de Ciclos, Cronograma Semanal, Material do Estratégia, Revisões Espaçadas, Simulados da Banca e Redações Discursivas) e elabore um diagnóstico tático completo de alto impacto.
+
+### 1. Repartição de Horas Periodizadas (Gráfico Horizontal de Foco):
+${periodizadasResumo}
+
+### 2. Status do Ciclo de Estudos e Histórico de Ciclos:
+${cicloResumo}
+- Total de sessões/blocos de foco coordenados: ${(historico || []).length} sessões.
+
+### 3. Índice de Acertos e Erros por Disciplina (TCU Target - 90% a 95%):
 ${materiasResumo}
+- Média geral de todas as matérias: ${totalQuestoes > 0 ? Math.round((totalAcertos / totalQuestoes) * 100) : 0}% (${totalAcertos} acertos em ${totalQuestoes} questões resolvidas ao longo de ${(totalHoras ?? 0).toFixed(1)}h de estudo).
 
-### Histórico de Simulados da Banca:
+### 4. Curva do Esquecimento e Revisões Espaçadas:
+${revisoesResumo}
+
+### 5. Cronograma Semanal e Ritmo de Execução:
+${cronogramaResumo}
+
+### 6. Simulados da Banca:
 ${simuladosResumo}
 
-### Últimas Sessões de Estudo Registradas:
-${historicoResumo}
+### 7. Mentor de Redação IA (Treinamento Discursivo):
+${redacoesResumo}
+
+---
 
 ### Instruções Cruciais de Estrutura da Resposta:
 Você deve estruturar seu laudo técnico exatamente com os delimitadores de tag indicados abaixo. Não coloque nenhum texto fora delas:
 
 [DIAGNOSTICO_GERAL]
-(Escreva aqui o diagnóstico geral detalhado sobre o volume de horas e taxa de acertos em relação ao nível exigido de 90-95% (ou conforme metas configuradas por matéria) exigido pela banca FGV para o TCU.)
+(Apresente uma análise holística da evolução do aluno. Avalie as Horas Periodizadas (Hoje vs 7 dias vs 30 dias), o ritmo no Cronograma Semanal, a velocidade de cobertura do edital e o volume de sessões coordenadas do Ciclo de Estudos. Destaque se o ritmo atual é sustentável para a aprovação no TCU.)
 
 [ALERTA_FRAQUEZA]
-(Identifique e disserte sobre as matérias com pior desempenho ou inércia de estudos, alertando sobre o risco estatístico destas no edital do TCU.)
+(Identifique pontualmente as maiores ameaças estatísticas: matérias abaixo da meta TCU Target de 90-95%, disciplinas negligenciadas ou zeradas no ciclo, revisões espaçadas vencidas/atrasadas com quebra da curva do esquecimento e defasagem no treino discursivo de redação.)
 
 [RECOMENDACOES]
-(Dicas práticas de remediação para o ciclo de estudos e gestão de revisões espaçadas.)
+(Forneça diretrizes práticas de engenharia de estudos: como reorganizar os blocos de 90 minutos do ciclo, calibrar as revisões atrasadas de 24h/7d/30d, elevar a assertividade nas disciplinas-chave como Controle Externo/AFO/Auditoria e equilibrar o tempo entre resolução de questões e confecção de peças/redações discursivas.)
 
 [PASSOS]
 - [ ] Passo 1
 - [ ] Passo 2
-(Defina um checklist com 2 ou 3 passos de ação imediata que o usuário deve seguir hoje. Utilize obrigatoriamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
+- [ ] Passo 3
+(Defina 3 passos de ação corretiva de implementação imediata para o dia de hoje. Use estritamente o formato de tarefas do Markdown: "- [ ] Texto do passo").
 
-Mantenha uma linguagem acadêmica, séria e focada na excelência profissional que o cargo de Auditor exige.`;
+Mantenha uma linguagem incisiva, analítica, profissional e focada no mais alto padrão de desempenho exigido pelo TCU.`;
 
     const response = await aiClient.models.generateContent({
       model: "gemini-3.5-flash",
